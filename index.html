@@ -1,0 +1,1921 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Smile Bloom</title>
+<style>
+  :root { --pink:#ff7eb6; --ink:#fff; --panel:rgba(20,10,20,.55); }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:#120a12; color:var(--ink);
+    font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif; overflow:hidden; }
+  #stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+  canvas { max-width:100vw; max-height:100vh; border-radius:14px; box-shadow:0 10px 60px rgba(255,126,182,.15); }
+  video { display:none; }
+  #start { position:absolute; padding:18px 30px; font-size:20px; border:0; border-radius:999px;
+    background:linear-gradient(135deg,#ff9ac8,#ff6fa5); color:#fff; cursor:pointer; font-weight:700;
+    box-shadow:0 8px 30px rgba(255,111,165,.45); }
+  #status { position:absolute; top:16px; left:50%; transform:translateX(-50%); background:var(--panel);
+    padding:8px 16px; border-radius:999px; font-size:14px; backdrop-filter:blur(8px); }
+  #hud { position:absolute; bottom:16px; left:50%; transform:translateX(-50%); display:none;
+    align-items:center; gap:10px; background:var(--panel); padding:10px 14px; border-radius:999px;
+    backdrop-filter:blur(8px); flex-wrap:wrap; justify-content:center; max-width:calc(100vw - 32px); }
+  #meter { width:120px; height:10px; border-radius:99px; background:rgba(255,255,255,.18); overflow:hidden; position:relative; }
+  #meterFill { height:100%; width:0; background:linear-gradient(90deg,#ffd36e,#ff7eb6); transition:width .08s; }
+  #meterMark { position:absolute; top:-3px; bottom:-3px; width:2px; background:#fff; }
+  #hud button { border:0; border-radius:999px; padding:7px 12px; background:rgba(255,255,255,.14);
+    color:#fff; cursor:pointer; font-size:13px; }
+  #hud button.on { background:var(--pink); }
+  #hud label { font-size:12px; display:flex; align-items:center; gap:6px; opacity:.85; }
+  #hud input[type=range] { width:80px; accent-color:var(--pink); }
+  .rec-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#ff3b5c; margin-right:6px; animation:blink 1s infinite; }
+  @keyframes blink { 50% { opacity:.2; } }
+  /* flower picker: die-cut stickers of each flower, top right */
+  #stickers { position:absolute; top:16px; right:16px; display:flex; flex-direction:column; gap:6px; align-items:center; z-index:5; }
+  .sticker { position:relative; width:62px; height:62px; border:0; padding:0; background:none; cursor:pointer;
+    transform:rotate(var(--rot)) scale(.86); transition:transform .25s cubic-bezier(.3,1.6,.5,1), opacity .2s; opacity:.72; }
+  .sticker img { width:100%; height:100%; object-fit:contain; pointer-events:none;
+    filter: drop-shadow(2.5px 0 0 #fff) drop-shadow(-2.5px 0 0 #fff) drop-shadow(0 2.5px 0 #fff) drop-shadow(0 -2.5px 0 #fff)
+            drop-shadow(0 5px 7px rgba(0,0,0,.35)); }
+  .sticker:hover { transform:rotate(0deg) scale(.95); opacity:1; }
+  .sticker.on { transform:rotate(var(--rot)) scale(1.06); opacity:1; }
+  .sticker span { position:absolute; left:50%; bottom:-6px; transform:translateX(-50%); white-space:nowrap;
+    font-size:11px; font-weight:700; padding:2px 8px; border-radius:99px; background:#fff; color:#3a2a1a;
+    box-shadow:0 2px 6px rgba(0,0,0,.25); opacity:0; transition:opacity .2s; }
+  .sticker.on span, .sticker:hover span { opacity:1; }
+  .sticker.loading { opacity:.35; cursor:wait; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c" width="1280" height="720"></canvas>
+  <button id="start">🌸 Start camera</button>
+  <div id="stickers" aria-label="Choose a flower"></div>
+  <div id="status">Smile to make flowers bloom behind you</div>
+  <div id="hud">
+    <span>😊</span>
+    <div id="meter"><div id="meterFill"></div><div id="meterMark"></div></div>
+    <label>Sensitivity <input id="sens" type="range" min="0.15" max="0.8" step="0.01" value="0.45" /></label>
+    <button id="vert" title="Toggle 9:16 (V)">9:16</button>
+    <button id="rec" title="Record video (R)">⏺ Record</button>
+  </div>
+</div>
+<video id="v" playsinline muted></video>
+
+<script type="module">
+import { FilesetResolver, FaceLandmarker, ImageSegmenter, HandLandmarker }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const $ = (id) => document.getElementById(id);
+const video = $("v"), canvas = $("c"), ctx = canvas.getContext("2d");
+const statusEl = $("status"), hud = $("hud"), meterFill = $("meterFill"), meterMark = $("meterMark");
+const sens = $("sens");
+
+// Offscreen layers
+const personCanvas = document.createElement("canvas"), pctx = personCanvas.getContext("2d");
+const maskCanvas = document.createElement("canvas"), mctx = maskCanvas.getContext("2d");
+const glowC = document.createElement("canvas"), gctx = glowC.getContext("2d");      // halo + highlight bloom (low-res)
+const halfC = document.createElement("canvas"), hctx = halfC.getContext("2d");      // skin smoothing (half-res)
+const bgBlurC = document.createElement("canvas"), bbctx = bgBlurC.getContext("2d"); // the room with you taken out
+const bgFillC = document.createElement("canvas"), bfctx = bgFillC.getContext("2d"); // the room with the gap filled in
+
+let maskImg = null, maskData = null, maskW = 0, maskH = 0, haveMask = false;
+let invertMask = false, maskVotes = 0;
+
+let faceLandmarker, segmenter, handLandmarker = null;
+let handPts = [];      // [{x, y, r, vx, vy}] palm + fingertips, screen coords
+let prevPalms = [];    // last palm positions, for swipe velocity
+let handFrame = 0;
+let handShapes = [], handSeenAt = -1;   // your hands' 21 points (video-normalized), for the cut-out
+let pointer = null;    // mouse / touch acting as a hand
+canvas.addEventListener("pointermove", (e) => {
+  const r = canvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) * canvas.width / r.width, y = (e.clientY - r.top) * canvas.height / r.height;
+  const now = performance.now();
+  if (pointer && now - pointer.t < 200) {
+    const el = Math.max(8, now - pointer.t) / 1000;
+    pointer.vx = clamp((x - pointer.x) / el, -4000, 4000); pointer.vy = clamp((y - pointer.y) / el, -4000, 4000);
+  } else if (!pointer) pointer = { vx: 0, vy: 0 };
+  pointer.x = x; pointer.y = y; pointer.t = now;
+});
+let vertical = false, showDebug = false, forceSmile = false;
+let smile = 0, smileRaw = 0, smiling = false, lastSmileTime = -10;
+let face = null; // {x,y,w} in screen coords (forehead point)
+let features = []; // soft ellipses over eyes/brows/lips, screen coords
+// lip contours (MediaPipe face mesh indices) — outer edge and inner mouth opening
+// face outline (MediaPipe face mesh indices), in video-normalized coords
+const FACE_OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
+let faceOval = null;
+const LIPS_OUTER = [61,185,40,39,37,0,267,269,270,409,291,375,321,405,314,17,84,181,91,146];
+const LIPS_INNER = [78,191,80,81,82,13,312,311,310,415,308,324,318,402,317,14,87,178,88,95];
+let lipsOuter = null, lipsInner = null;
+
+let cheeks = null;              // two cheek points, for reading skin tone
+let lipTone = null;             // [r,g,b] tint matched to this person's lips + skin
+let lastLipSample = -1;
+
+function lipPath() {
+  const path = new Path2D();
+  const trace = (pts) => { pts.forEach(([x, y], i) => i ? path.lineTo(x, y) : path.moveTo(x, y)); path.closePath(); };
+  trace(lipsOuter); trace(lipsInner);
+  return path;
+}
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+  if (mx === mn) return [0, 0, l];
+  const d = mx - mn, s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  let h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h * 60, s, l];
+}
+function hslToRgb(h, s, l) {
+  h = ((h % 360) + 360) % 360 / 360;
+  if (!s) return [l * 255, l * 255, l * 255];
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  const f = (t) => { t = (t + 1) % 1; return t < 1/6 ? p + (q - p) * 6 * t : t < 1/2 ? q : t < 2/3 ? p + (q - p) * (2/3 - t) * 6 : p; };
+  return [f(h + 1/3) * 255, f(h) * 255, f(h - 1/3) * 255];
+}
+const hueMix = (a, b, t) => { const d = ((b - a + 540) % 360) - 180; return a + d * t; };
+
+// read this person's natural lip color and skin undertone, and pick a tint that flatters it
+function sampleLipTone(c) {
+  const xs = lipsOuter.map((p) => p[0]), ys = lipsOuter.map((p) => p[1]);
+  const x0 = Math.max(0, Math.floor(Math.min(...xs))), y0 = Math.max(0, Math.floor(Math.min(...ys)));
+  const x1 = Math.min(c.canvas.width, Math.ceil(Math.max(...xs))), y1 = Math.min(c.canvas.height, Math.ceil(Math.max(...ys)));
+  const w = x1 - x0, h = y1 - y0;
+  if (w < 4 || h < 3) return;
+  const data = c.getImageData(x0, y0, w, h).data, path = lipPath();
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let j = 0; j < h; j += 2) for (let i = 0; i < w; i += 2) {
+    if (!c.isPointInPath(path, x0 + i + 0.5, y0 + j + 0.5, "evenodd")) continue;
+    const k = (j * w + i) * 4; if (data[k + 3] < 200) continue;
+    r += data[k]; g += data[k + 1]; b += data[k + 2]; n++;
+  }
+  if (n < 10) return;
+  const [lh, ls, ll] = rgbToHsl(r / n, g / n, b / n);
+
+  // skin undertone from the cheeks: warmer (more golden) skin → coral/terracotta, cooler → rose/berry
+  let undertone = 0;
+  if (cheeks) {
+    let sr = 0, sg = 0, sb = 0, sn = 0;
+    for (const [cx, cy] of cheeks) {
+      const d = c.getImageData(Math.max(0, Math.round(cx) - 4), Math.max(0, Math.round(cy) - 4), 8, 8).data;
+      for (let k = 0; k < d.length; k += 4) if (d[k + 3] > 200) { sr += d[k]; sg += d[k + 1]; sb += d[k + 2]; sn++; }
+    }
+    if (sn) { const [sh] = rgbToHsl(sr / sn, sg / sn, sb / sn); undertone = sh; }
+  }
+  const warm = undertone > 22;               // typical skin hues sit ~10–35°
+  const nudgeHue = warm ? 10 : 350;          // coral/terracotta vs rose/berry
+  const th = hueMix(lh, nudgeHue, 0.3);
+  const ts = clamp(ls + 0.14, 0.22, 0.55);   // a little richer than natural
+  const tl = clamp(ll - 0.04, 0.2, 0.58);    // a touch deeper, matched to their depth
+  const target = hslToRgb(th, ts, tl);
+  lipTone = lipTone ? lipTone.map((v, i) => v + (target[i] - v) * 0.35) : target;
+}
+
+// a hint of color on the lips (not the teeth), matched to the person, with feathered edges
+function tintLips(c, amount, now) {
+  if (!lipsOuter || amount <= 0.01) return;
+  if (now - lastLipSample > 0.5 || !lipTone) { lastLipSample = now; sampleLipTone(c); }
+  if (!lipTone) return;
+  const col = `rgb(${lipTone.map(Math.round).join(",")})`;
+  const path = lipPath();
+  const lw = Math.hypot(lipsOuter[10][0] - lipsOuter[0][0], lipsOuter[10][1] - lipsOuter[0][1]);
+  c.save();
+  c.filter = `blur(${Math.max(1, lw * 0.03)}px)`;
+  c.fillStyle = col;
+  c.globalCompositeOperation = "color";      // shift toward their enriched natural shade, keep lip texture
+  c.globalAlpha = 0.35 * amount;
+  c.fill(path, "evenodd");
+  c.globalCompositeOperation = "soft-light"; // a little depth
+  c.globalAlpha = 0.25 * amount;
+  c.fill(path, "evenodd");
+  c.restore();
+}
+
+// punch the eyes/brows/lips out of a softening layer so they stay sharp
+function protectFeatures(c, scale, strength = 1) {
+  if (!features.length) return;
+  c.save();
+  c.globalCompositeOperation = "destination-out";
+  c.globalAlpha = strength;
+  for (const f of features) {
+    c.setTransform(scale, 0, 0, scale * (f.ry / f.rx), f.x * scale, f.y * scale);
+    const g = c.createRadialGradient(0, 0, 0, 0, 0, f.rx);
+    g.addColorStop(0, "rgba(0,0,0,1)");
+    g.addColorStop(0.65, "rgba(0,0,0,1)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    c.fillStyle = g;
+    c.beginPath(); c.arc(0, 0, f.rx, 0, Math.PI * 2); c.fill();
+  }
+  c.restore();
+}
+let lastVideoTime = -1;
+let prog = 0;    // 0..1 how far the bloom has spread
+
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
+// ---------- setup ----------
+function setStatus(t) { statusEl.textContent = t; statusEl.style.display = t ? "block" : "none"; }
+
+async function makeModels() {
+  const fileset = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  const make = async (delegate) => {
+    faceLandmarker = await FaceLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath:
+        "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+        delegate },
+      runningMode: "VIDEO", numFaces: 3, outputFaceBlendshapes: true,   // a few, so we can pick YOU
+    });
+    segmenter = await ImageSegmenter.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath:
+        "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite",
+        delegate },
+      runningMode: "VIDEO", outputConfidenceMasks: true, outputCategoryMask: false,
+    });
+    try { // hands are a bonus — the effect still works if this fails to load
+      handLandmarker = await HandLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath:
+          "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate },
+        runningMode: "VIDEO", numHands: 2,
+      });
+    } catch (e) { console.warn("Hand tracking unavailable", e); handLandmarker = null; }
+  };
+  try { await make("GPU"); } catch (e) { console.warn("GPU failed, using CPU", e); await make("CPU"); }
+}
+
+$("start").onclick = async () => {
+  $("start").style.display = "none";
+  try {
+    setStatus("Asking for camera…");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    setStatus("Loading face tracking…");
+    await makeModels();
+    setStatus("Smile! 😊");
+    setTimeout(() => setStatus(""), 2500);
+    hud.style.display = "flex";
+    requestAnimationFrame(loop);
+  } catch (e) {
+    console.error(e);
+    setStatus("Couldn't start: " + (e.message || e));
+    $("start").style.display = "block";
+  }
+};
+
+// ---------- who is "you" ----------
+// The biggest face is the person closest to the camera. Stick with the same face from frame to
+// frame (someone walking past behind you can't steal it) unless another face is clearly bigger.
+let mainFaceAt = null;    // last centre of your face, video-normalized
+function pickMainFace(fr) {
+  const L = fr.faceLandmarks || [];
+  if (!L.length || !fr.faceBlendshapes || !fr.faceBlendshapes.length) { mainFaceAt = null; return -1; }
+  const info = L.map((lm) => ({ w: Math.abs(lm[454].x - lm[234].x), x: lm[1].x, y: lm[1].y }));
+  let big = 0; for (let i = 1; i < info.length; i++) if (info[i].w > info[big].w) big = i;
+  let pick = big;
+  if (mainFaceAt) {
+    let near = -1, nd = Infinity;
+    info.forEach((f, i) => { const d = Math.hypot(f.x - mainFaceAt.x, f.y - mainFaceAt.y); if (d < nd) { nd = d; near = i; } });
+    if (near >= 0 && nd < info[near].w * 1.5 && info[near].w > info[big].w * 0.75) pick = near;   // still you
+  }
+  mainFaceAt = { x: info[pick].x, y: info[pick].y };
+  return pick;
+}
+
+// ---------- mask ----------
+// Only the person connected to YOUR face counts as "you". Other people in the background are
+// dropped from the cut-out, so they stay part of the background instead of punching holes in the flowers.
+// Done on a coarse grid (cheap), then applied to the full-size mask.
+let keepGrid = null, keepCols = 0, keepRows = 0;
+function keepOnlyYou(px, w, h) {
+  if (!faceOval) return;
+  const cols = 120, rows = Math.max(1, Math.round(cols * h / w));
+  if (!keepGrid || keepCols !== cols || keepRows !== rows) { keepGrid = new Uint8Array(cols * rows); keepCols = cols; keepRows = rows; }
+  const on = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) {
+    const y = Math.min(h - 1, Math.floor((r + 0.5) * h / rows));
+    for (let c = 0; c < cols; c++) {
+      const x = Math.min(w - 1, Math.floor((c + 0.5) * w / cols));
+      on[r * cols + c] = px[(y * w + x) * 4 + 3] > 90 ? 1 : 0;
+    }
+  }
+  // start from your face (its centre is always "you")
+  let fx = 0, fy = 0; for (const [x, y] of faceOval) { fx += x; fy += y; }
+  // and only within your own body's area: a few face-widths either side of your face, from just above
+  // your head downward — someone overlapping your outline from behind gets cut off at that line
+  let fminx = 1, fmaxx = 0, fminy = 1, fmaxy = 0;
+  for (const [x, y] of faceOval) { fminx = Math.min(fminx, x); fmaxx = Math.max(fmaxx, x); fminy = Math.min(fminy, y); fmaxy = Math.max(fmaxy, y); }
+  const fcx = (fminx + fmaxx) / 2, fwN = fmaxx - fminx, fhN = fmaxy - fminy;
+  const inYourArea = (c, r) => Math.abs((c + 0.5) / cols - fcx) < fwN * 3.4 && (r + 0.5) / rows > fminy - fhN * 3;   // room for raised hands
+  const sc = clamp(Math.floor(fx / faceOval.length * cols), 0, cols - 1), sr = clamp(Math.floor(fy / faceOval.length * rows), 0, rows - 1);
+  keepGrid.fill(0);
+  const st = [sr * cols + sc]; keepGrid[st[0]] = 1; on[st[0]] = 1;
+  while (st.length) {
+    const q = st.pop(), c = q % cols, r = (q / cols) | 0;
+    for (const n of [c > 0 ? q - 1 : -1, c < cols - 1 ? q + 1 : -1, r > 0 ? q - cols : -1, r < rows - 1 ? q + cols : -1])
+      if (n >= 0 && on[n] && !keepGrid[n] && inYourArea(n % cols, (n / cols) | 0)) { keepGrid[n] = 1; st.push(n); }
+  }
+  // if the detector barely found you this frame, don't risk erasing you — skip the filter
+  let kept = 0; for (let q = 0; q < cols * rows; q++) kept += keepGrid[q];
+  if (kept < cols * rows * 0.015) { keepGrid.fill(1); return; }
+  // grow it by a cell so your edges never get nibbled
+  const grown = keepGrid.slice();
+  for (let q = 0; q < cols * rows; q++) if (keepGrid[q]) {
+    const c = q % cols, r = (q / cols) | 0;
+    if (c > 0) grown[q - 1] = 1; if (c < cols - 1) grown[q + 1] = 1;
+    if (r > 0) grown[q - cols] = 1; if (r < rows - 1) grown[q + cols] = 1;
+  }
+  keepGrid = grown;
+  // clear everything not connected to you
+  for (let y = 0; y < h; y++) {
+    const rowBase = Math.min(rows - 1, Math.floor(y * rows / h)) * cols;
+    for (let x = 0, j = y * w * 4 + 3; x < w; x++, j += 4) {
+      if (px[j] && !keepGrid[rowBase + Math.min(cols - 1, Math.floor(x * cols / w))]) px[j] = 0;
+    }
+  }
+}
+// raw mask value at a video-normalized point, limited to you (other people read as background)
+function keptAt(nx, ny) {
+  if (!keepGrid) return true;
+  const c = clamp(Math.floor(nx * keepCols), 0, keepCols - 1), r = clamp(Math.floor(ny * keepRows), 0, keepRows - 1);
+  return keepGrid[r * keepCols + c] === 1;
+}
+
+function onSegment(res) {
+  const m = res.confidenceMasks && res.confidenceMasks[0];
+  if (!m) return;
+  const w = m.width, h = m.height;
+  if (w !== maskW || h !== maskH) {
+    maskW = w; maskH = h; maskCanvas.width = w; maskCanvas.height = h;
+    maskImg = mctx.createImageData(w, h);
+    const px = maskImg.data; for (let i = 0; i < px.length; i += 4) { px[i] = px[i+1] = px[i+2] = 255; }
+  }
+  const data = m.getAsFloat32Array();
+  maskData = data;
+  const px = maskImg.data;
+  // decisive cut-out: anything the detector is moderately sure about is drawn fully solid,
+  // so nothing behind you (stems, glow) can show through a half-transparent you
+  for (let i = 0, j = 3; i < data.length; i++, j += 4) {
+    const v = invertMask ? 1 - data[i] : data[i];
+    let a = (v - 0.12) / 0.26; a = a < 0 ? 0 : a > 1 ? 1 : a;   // fully solid from 0.38 up
+    px[j] = a * a * (3 - 2 * a) * 255;
+  }
+  keepOnlyYou(px, w, h);
+  mctx.putImageData(maskImg, 0, 0);
+  // your hands are always solid too: the tracker's palm + finger points, drawn as a hand shape —
+  // so flowers never show through your fingers and they never get blurred into the background
+  for (const hs of handShapes) {
+    const P = (i) => [hs[i][0] * w, hs[i][1] * h];
+    const palm = Math.hypot((hs[9][0] - hs[0][0]) * w, (hs[9][1] - hs[0][1]) * h);
+    mctx.lineCap = "round"; mctx.lineJoin = "round";
+    // first clear the detector's loose edge around your fingers (it drags a strip of the room along,
+    // which shows as a sharp outline against the blurred background)…
+    mctx.save(); mctx.globalCompositeOperation = "destination-out"; mctx.strokeStyle = "#000";
+    mctx.lineWidth = palm * 0.55;
+    for (const chain of [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16], [17, 18, 19, 20]]) {
+      mctx.beginPath();
+      chain.forEach((i, k) => { const [x, y] = P(i); k ? mctx.lineTo(x, y) : mctx.moveTo(x, y); });
+      mctx.stroke();
+    }
+    for (const [a, b] of [[3, 4], [7, 8], [11, 12], [15, 16], [19, 20]]) {
+      const [ax, ay] = P(a), [bx, by] = P(b);
+      mctx.beginPath(); mctx.arc(bx + (bx - ax) * 0.3, by + (by - ay) * 0.3, palm * 0.3, 0, Math.PI * 2); mctx.fill();
+    }
+    // the open space between your thumb and index finger is room, not you — the detector often
+    // fills it in when your hand makes a "C", which cut a sharp, unblurred strip through the flowers
+    mctx.beginPath();
+    [2, 3, 4, 8, 7, 6, 5].forEach((i, k) => { const [x, y] = P(i); k ? mctx.lineTo(x, y) : mctx.moveTo(x, y); });
+    mctx.closePath(); mctx.fill();
+    mctx.restore();
+    // …then draw the tracker's precise hand shape in its place. The palm stops at the thumb's
+    // base (1), not its knuckle (2), so it never bridges the gap to your index finger.
+    mctx.fillStyle = "#fff"; mctx.strokeStyle = "#fff";
+    mctx.beginPath();
+    [0, 1, 5, 9, 13, 17].forEach((i, k) => { const [x, y] = P(i); k ? mctx.lineTo(x, y) : mctx.moveTo(x, y); });
+    mctx.closePath(); mctx.fill();
+    mctx.lineWidth = palm * 0.17;                       // a little inside the real finger — never wider
+    for (const chain of [[0, 1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16], [17, 18, 19, 20]]) {
+      mctx.beginPath();
+      chain.forEach((i, k) => { const [x, y] = P(i); k ? mctx.lineTo(x, y) : mctx.moveTo(x, y); });
+      mctx.stroke();
+    }
+    // fingertips: a touch beyond the last joint
+    for (const [a, b] of [[3, 4], [7, 8], [11, 12], [15, 16], [19, 20]]) {
+      const [ax, ay] = P(a), [bx, by] = P(b);
+      mctx.beginPath(); mctx.arc(bx, by, palm * 0.085, 0, Math.PI * 2); mctx.fill();
+    }
+  }
+  // your face (plus a bit above for hair / a cap) is always solid, whatever the detector thinks
+  if (faceOval) {
+    let mx = 0, my = 0;
+    for (const [x, y] of faceOval) { mx += x; my += y; }
+    mx /= faceOval.length; my /= faceOval.length;
+    mctx.fillStyle = "#fff";
+    mctx.beginPath();
+    faceOval.forEach(([x, y], i) => {
+      let ex = mx + (x - mx) * 1.08, ey = my + (y - my) * 1.08;
+      if (y < my) ey -= (my - y) * 0.3;                 // reach up over the hairline / cap
+      const X = ex * w, Y = ey * h;
+      i ? mctx.lineTo(X, Y) : mctx.moveTo(X, Y);
+    });
+    mctx.closePath(); mctx.fill();
+  }
+  haveMask = true;
+}
+
+// ---------- geometry (video -> mirrored screen) ----------
+let crop = { sx: 0, sy: 0, sw: 1, sh: 1, vw: 1, vh: 1 };
+function videoNormToScreen(nx, ny) {
+  const vx = nx * crop.vw, vy = ny * crop.vh;
+  return [(1 - (vx - crop.sx) / crop.sw) * canvas.width, ((vy - crop.sy) / crop.sh) * canvas.height];
+}
+
+// ---------- the gardenia, cut out of your reference image ----------
+// gardenia.webp is loaded once; the beige paper (and the blurred leaf) is removed by flood-filling
+// in from the edges, which stops at the flower's painted outline, so its grey-lavender shading stays.
+const BLOOMS = [];                  // filled once the image is cut out: { img, half, r }
+
+async function loadBlooms() {
+  const src = new Image(); src.src = "gardenia.webp";
+  await src.decode();
+  sampleGreens(src); LEAVES = buildLeaves();            // greenery in the painting's own greens
+  const W0 = src.naturalWidth, H0 = src.naturalHeight;
+  // the flower head (with a margin), as fractions of the image
+  const cx0 = Math.round(W0 * 0.07), cy0 = Math.round(H0 * 0.24);
+  const cw = Math.round(W0 * 0.92), ch = Math.round(H0 * 0.52);
+  const cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
+  const c = cv.getContext("2d", { willReadFrequently: true });
+  c.drawImage(src, cx0, cy0, cw, ch, 0, 0, cw, ch);
+  const id = c.getImageData(0, 0, cw, ch), d = id.data, N = cw * ch;
+
+  // paper colour from the corners
+  let br = 0, bgc = 0, bb = 0;
+  for (const [x, y] of [[2, 2], [cw - 3, 2], [2, ch - 3], [cw - 3, ch - 3]]) { const k = (y * cw + x) * 4; br += d[k]; bgc += d[k + 1]; bb += d[k + 2]; }
+  br /= 4; bgc /= 4; bb /= 4;
+  const isBgLike = (k) => {
+    const r = d[k], g = d[k + 1], b = d[k + 2];
+    const warm = r - b > 5 && Math.abs((r - b) - (br - bb)) < 7;             // beige paper is warm
+    const near = Math.abs(r - br) + Math.abs(g - bgc) + Math.abs(b - bb) < 40;
+    const leaf = g > r + 8 && g > b + 4;                                      // the soft green leaf
+    return (warm && near) || leaf;
+  };
+  // flood fill from the border; neighbours must be smooth continuations (stops at outlines)
+  const bg = new Uint8Array(N), stack = [];
+  const push = (p) => { if (!bg[p] && isBgLike(p * 4)) { bg[p] = 1; stack.push(p); } };
+  for (let x = 0; x < cw; x++) { push(x); push((ch - 1) * cw + x); }
+  for (let y = 0; y < ch; y++) { push(y * cw); push(y * cw + cw - 1); }
+  while (stack.length) {
+    const p = stack.pop(), x = p % cw, y = (p / cw) | 0, k = p * 4;
+    for (const q of [x > 0 ? p - 1 : -1, x < cw - 1 ? p + 1 : -1, y > 0 ? p - cw : -1, y < ch - 1 ? p + cw : -1]) {
+      if (q < 0 || bg[q]) continue;
+      const j = q * 4;
+      if (Math.abs(d[j] - d[k]) + Math.abs(d[j + 1] - d[k + 1]) + Math.abs(d[j + 2] - d[k + 2]) > 6) continue;
+      push(q);
+    }
+  }
+  // keep only the biggest piece (the flower) — drops stray specks
+  const lab = new Int32Array(N), sizes = [0];
+  for (let p = 0; p < N; p++) {
+    if (bg[p] || lab[p]) continue;
+    const id2 = sizes.length; let n = 0; const st = [p]; lab[p] = id2;
+    while (st.length) {
+      const q = st.pop(); n++; const x = q % cw, y = (q / cw) | 0;
+      for (const r of [x > 0 ? q - 1 : -1, x < cw - 1 ? q + 1 : -1, y > 0 ? q - cw : -1, y < ch - 1 ? q + cw : -1])
+        if (r >= 0 && !bg[r] && !lab[r]) { lab[r] = id2; st.push(r); }
+    }
+    sizes.push(n);
+  }
+  let keep = 1; for (let i = 2; i < sizes.length; i++) if (sizes[i] > sizes[keep]) keep = i;
+  let minx = cw, miny = ch, maxx = 0, maxy = 0;
+  for (let p = 0; p < N; p++) {
+    const on = lab[p] === keep;
+    d[p * 4 + 3] = on ? 255 : 0;
+    if (on) { const x = p % cw, y = (p / cw) | 0; if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y; }
+  }
+  c.putImageData(id, 0, 0);
+
+  // soften the cut edge a touch
+  const bw = maxx - minx + 1, bh = maxy - miny + 1;
+  const soft = document.createElement("canvas"); soft.width = bw; soft.height = bh;
+  const sc = soft.getContext("2d");
+  sc.drawImage(cv, minx, miny, bw, bh, 0, 0, bw, bh);
+  const mask = document.createElement("canvas"); mask.width = bw; mask.height = bh;
+  const mc2 = mask.getContext("2d"); mc2.filter = "blur(1.2px)"; mc2.drawImage(soft, 0, 0);
+  sc.globalCompositeOperation = "destination-in"; sc.drawImage(mask, 0, 0);
+
+  // where the painted stem stub ends (the lowest green part) — new stems attach right there
+  const sd = sc.getImageData(0, 0, bw, bh).data;
+  let stubX = bw * 0.3, stubY = bh * 0.9, best = -1;
+  for (let y = bh - 1; y >= 0 && best < 0; y--) {
+    let sx = 0, n = 0;
+    for (let x = 0; x < bw; x++) {
+      const k = (y * bw + x) * 4;
+      if (sd[k + 3] > 160 && sd[k + 1] > sd[k] + 4 && sd[k + 1] > sd[k + 2] + 8) { sx += x; n++; }
+    }
+    if (n >= 2) { best = y; stubX = sx / n; stubY = y; }
+  }
+
+  // sprites: the flower centred in a square, plus a mirrored copy for variety
+  const R = 230;                                      // flower "radius" inside the sprite
+  const scale = (2 * R) / Math.max(bw, bh);
+  const size = Math.ceil(2 * R * 1.08);
+  for (const flip of [1, -1]) {
+    const o = document.createElement("canvas"); o.width = o.height = size;
+    const oc = o.getContext("2d");
+    oc.translate(size / 2, size / 2); oc.scale(flip * scale, scale);
+    oc.drawImage(soft, -bw / 2, -bh / 2);
+    const stub = { x: flip * (stubX - bw / 2) * scale, y: (stubY - bh / 2) * scale };   // sprite px from centre
+    BLOOMS.push({ img: o, nostem: withoutGreen(o, size), ...depthVariants(o, size), half: size / 2, r: R,
+      stub, stubAng: Math.atan2(stub.y, stub.x) });
+  }
+  renderStickers();
+}
+
+// The flower with its green calyx and stem taken out — just the white bloom, for flowers that
+// can't turn their stem toward you. (Cream petal centres are kept: only clearly green paint goes.)
+function withoutGreen(o, size) {
+  const c = document.createElement("canvas"); c.width = c.height = size;
+  const x = c.getContext("2d", { willReadFrequently: true }); x.drawImage(o, 0, 0);
+  const id = x.getImageData(0, 0, size, size), d = id.data, N = size * size;
+  const on = new Uint8Array(N);
+  for (let p = 0, k = 0; p < N; p++, k += 4) {
+    const r = d[k], g = d[k + 1], b = d[k + 2], a = d[k + 3];
+    const green = g - b > 42 && 0.299 * r + 0.587 * g + 0.114 * b < 195;
+    on[p] = a > 20 && !green ? 1 : 0;
+  }
+  // keep the biggest piece (the petals) so no little green-edged crumbs are left
+  const lab = new Int32Array(N); let best = 0, bestN = 0, L = 0;
+  for (let p = 0; p < N; p++) {
+    if (!on[p] || lab[p]) continue;
+    L++; let m = 0; const st = [p]; lab[p] = L;
+    while (st.length) { const q = st.pop(); m++; const qx = q % size, qy = (q / size) | 0;
+      for (const r of [qx > 0 ? q - 1 : -1, qx < size - 1 ? q + 1 : -1, qy > 0 ? q - size : -1, qy < size - 1 ? q + size : -1])
+        if (r >= 0 && on[r] && !lab[r]) { lab[r] = L; st.push(r); } }
+    if (m > bestN) { bestN = m; best = L; }
+  }
+  for (let p = 0; p < N; p++) if (lab[p] !== best) d[p * 4 + 3] = 0;
+  x.putImageData(id, 0, 0);
+  // soften the new edge where the calyx used to be
+  const m2 = document.createElement("canvas"); m2.width = m2.height = size;
+  const mc = m2.getContext("2d"); mc.filter = "blur(1.5px)"; mc.drawImage(c, 0, 0);
+  x.globalCompositeOperation = "destination-in"; x.drawImage(m2, 0, 0);
+  return c;
+}
+
+// A soft cast shadow of the silhouette (used to show which flowers sit in front).
+function depthVariants(o, size) {
+  const sh = document.createElement("canvas"); sh.width = sh.height = size;
+  const shc = sh.getContext("2d"); shc.drawImage(o, 0, 0);
+  shc.globalCompositeOperation = "source-in"; shc.fillStyle = "rgb(82,86,102)"; shc.fillRect(0, 0, size, size);
+  return {
+    shadow: (() => { const c = document.createElement("canvas"); c.width = c.height = size;
+      const x = c.getContext("2d"); x.filter = "blur(14px)"; x.drawImage(sh, 0, 0); return c; })(),
+  };
+}
+
+// ---------- the bud, cut out of your second painting ----------
+// gardenia-bud.webp: the closed bud on the right (cream-white body, green sepals and stem). Its
+// background is soft green, so the fill is gentler, and pieces of the neighbouring flower are excluded.
+const BUDS = [];
+async function loadBuds() {
+  const src = new Image(); src.src = "gardenia-bud.webp";
+  await src.decode();
+  const sxN = src.naturalWidth / 736, syN = src.naturalHeight / 1308;     // crop was measured on a 736×1308 image
+  const cx0 = Math.round(567 * sxN), cy0 = Math.round(560 * syN), cw = Math.round(150 * sxN), ch = Math.round(255 * syN);
+  const cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
+  const c = cv.getContext("2d", { willReadFrequently: true });
+  c.drawImage(src, cx0, cy0, cw, ch, 0, 0, cw, ch);
+  const id = c.getImageData(0, 0, cw, ch), d = id.data, N = cw * ch;
+  let br = 0, bgc = 0, bb = 0, n = 0;
+  const addB = (p) => { br += d[p * 4]; bgc += d[p * 4 + 1]; bb += d[p * 4 + 2]; n++; };
+  for (let x = 0; x < cw; x++) { addB(x); addB((ch - 1) * cw + x); }
+  for (let y = 0; y < ch; y++) { addB(y * cw); addB(y * cw + cw - 1); }
+  br /= n; bgc /= n; bb /= n;
+  const X = (v) => v * cw / 150, Y = (v) => v * ch / 255;
+  const lum = (k) => 0.299 * d[k] + 0.587 * d[k + 1] + 0.114 * d[k + 2];
+  // the neighbouring flower's white petal and another bud's tip sit in the top-left corner
+  const excluded = (x, y, k) => (y < Y(40) && x < X(46)) || (y < Y(150) && x < X(24) - (y - Y(60)) * 0.2)
+    || (y < Y(150) && x < X(38) - (y - Y(60)) * 0.27 && lum(k) > 226);
+  const near = (k, y) => Math.abs(d[k] - br) + Math.abs(d[k + 1] - bgc) + Math.abs(d[k + 2] - bb) < (y > Y(200) ? 72 : 55);
+  const bg = new Uint8Array(N), st = [];
+  const push = (p) => { const x = p % cw, y = (p / cw) | 0; if (!bg[p] && (excluded(x, y, p * 4) || near(p * 4, y))) { bg[p] = 1; st.push(p); } };
+  for (let x = 0; x < cw; x++) { push(x); push((ch - 1) * cw + x); }
+  for (let y = 0; y < ch; y++) { push(y * cw); push(y * cw + cw - 1); }
+  while (st.length) {
+    const p = st.pop(), x = p % cw, y = (p / cw) | 0, k = p * 4;
+    for (const q of [x > 0 ? p - 1 : -1, x < cw - 1 ? p + 1 : -1, y > 0 ? p - cw : -1, y < ch - 1 ? p + cw : -1]) {
+      if (q < 0 || bg[q]) continue;
+      const j = q * 4, qx = q % cw, qy = (q / cw) | 0;
+      if (!excluded(qx, qy, j) && Math.abs(d[j] - d[k]) + Math.abs(d[j + 1] - d[k + 1]) + Math.abs(d[j + 2] - d[k + 2]) > 9) continue;
+      push(q);
+    }
+  }
+  // keep the biggest piece (the bud), then shave one pixel off the edge to lose any green fringe
+  const lab = new Int32Array(N), sizes = [0];
+  for (let p = 0; p < N; p++) {
+    if (bg[p] || lab[p]) continue;
+    const L = sizes.length; let m = 0; const s2 = [p]; lab[p] = L;
+    while (s2.length) { const q = s2.pop(); m++; const x = q % cw, y = (q / cw) | 0;
+      for (const r of [x > 0 ? q - 1 : -1, x < cw - 1 ? q + 1 : -1, y > 0 ? q - cw : -1, y < ch - 1 ? q + cw : -1])
+        if (r >= 0 && !bg[r] && !lab[r]) { lab[r] = L; s2.push(r); } }
+    sizes.push(m);
+  }
+  let keep = 1; for (let i = 2; i < sizes.length; i++) if (sizes[i] > sizes[keep]) keep = i;
+  const on = new Uint8Array(N); for (let p = 0; p < N; p++) on[p] = lab[p] === keep ? 1 : 0;
+  let minx = cw, miny = ch, maxx = 0, maxy = 0;
+  for (let p = 0; p < N; p++) {
+    const x = p % cw, y = (p / cw) | 0;
+    let a = on[p];
+    if (a && (x === 0 || y === 0 || x === cw - 1 || !on[p - 1] || !on[p + 1] || !on[p - cw] || (y < ch - 1 && !on[p + cw]))) a = 0;
+    d[p * 4 + 3] = a ? 255 : 0;
+    if (a) { if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y; }
+  }
+  c.putImageData(id, 0, 0);
+  const bw = maxx - minx + 1, bh = maxy - miny + 1;
+  const soft = document.createElement("canvas"); soft.width = bw; soft.height = bh;
+  const sc = soft.getContext("2d"); sc.drawImage(cv, minx, miny, bw, bh, 0, 0, bw, bh);
+  const mk = document.createElement("canvas"); mk.width = bw; mk.height = bh;
+  const mkc = mk.getContext("2d"); mkc.filter = "blur(0.8px)"; mkc.drawImage(soft, 0, 0);
+  sc.globalCompositeOperation = "destination-in"; sc.drawImage(mk, 0, 0);
+  // where its stem ends (lowest green pixels) so a stem can join it
+  const sd = sc.getImageData(0, 0, bw, bh).data;
+  let stubX = bw * 0.3, stubY = bh - 1;
+  for (let y = bh - 1; y >= 0; y--) { let sx = 0, m = 0;
+    for (let x = 0; x < bw; x++) { const k = (y * bw + x) * 4; if (sd[k + 3] > 160) { sx += x; m++; } }
+    if (m >= 2) { stubX = sx / m; stubY = y; break; } }
+  const R = 150, scale = (2 * R) / Math.max(bw, bh), size = Math.ceil(2 * R * 1.1);
+  for (const flip of [1, -1]) {
+    const o = document.createElement("canvas"); o.width = o.height = size;
+    const oc = o.getContext("2d"); oc.translate(size / 2, size / 2); oc.scale(flip * scale, scale); oc.drawImage(soft, -bw / 2, -bh / 2);
+    const stub = { x: flip * (stubX - bw / 2) * scale, y: (stubY - bh / 2) * scale };
+    BUDS.push({ img: o, ...depthVariants(o, size), half: size / 2, r: R, stub, stubAng: Math.atan2(stub.y, stub.x) });
+  }
+}
+// (the painted gardenia bud is no longer used — the gardenias are cut from your photos now)
+
+// ---------- leaves & stems in the painting's own greens ----------
+// The greens are sampled from the gardenia image itself (its stem, calyx and leaves), so the
+// greenery matches the flower's colour, softness and light exactly. Default until it loads:
+let GREEN = { dark: [76, 89, 15], mid: [134, 141, 86], light: [169, 172, 123], stemMid: [122, 131, 83] };
+const rgba = (c, a) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+
+// paper grain, the same kind of texture as the watercolor paper in the painting
+const PAPER = (() => {
+  const n = document.createElement("canvas"); n.width = n.height = 96;
+  const c = n.getContext("2d"), id = c.createImageData(96, 96), d = id.data;
+  for (let i = 0; i < d.length; i += 4) { const v = 205 + Math.random() * 50; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
+  c.putImageData(id, 0, 0); return n;
+})();
+
+function sampleGreens(src) {
+  const W = src.naturalWidth, H = src.naturalHeight;
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+  const c = cv.getContext("2d", { willReadFrequently: true }); c.drawImage(src, 0, 0);
+  const d = c.getImageData(0, 0, W, H).data;
+  const pick = (x0, y0, x1, y1, keep = (r, g, b) => g >= r - 2 && g > b + 25) => {
+    const px = [];
+    for (let y = Math.floor(y0 * H); y < y1 * H; y += 2) for (let x = Math.floor(x0 * W); x < x1 * W; x += 2) {
+      const k = (y * W + x) * 4, r = d[k], g = d[k + 1], b = d[k + 2];
+      if (keep(r, g, b)) px.push([r, g, b, 0.299 * r + 0.587 * g + 0.114 * b]);   // true sap greens only
+    }
+    px.sort((a, b) => a[3] - b[3]);
+    // average a band around each percentile (steadier than a single pixel)
+    const band = (f) => { const i0 = Math.floor((f - 0.1) * px.length), i1 = Math.ceil((f + 0.1) * px.length); let r = 0, g = 0, b = 0, n = 0;
+      for (let i = Math.max(0, i0); i < Math.min(px.length, i1); i++) { r += px[i][0]; g += px[i][1]; b += px[i][2]; n++; } return n ? [r / n, g / n, b / n] : null; };
+    return px.length > 50 ? { dark: band(0.15), mid: band(0.5), light: band(0.87) } : null;
+  };
+  // the in-focus stem and calyx right under the flower — the greens that touch the bloom
+  // (not the blurry background leaves, which read muddy). Every stem pixel counts, including the
+  // paler ones where the paint is thin, so the result is the stem's true watercolor green.
+  const paperK = (0.1 * H | 0) * W * 4 + (0.6 * W | 0) * 4, paper = [d[paperK], d[paperK + 1], d[paperK + 2]];
+  const isGreen = (r, g, b) => Math.abs(r - paper[0]) + Math.abs(g - paper[1]) + Math.abs(b - paper[2]) > 45 && g >= r && g > b
+    && 0.299 * r + 0.587 * g + 0.114 * b < 215;                                 // skip white petal pixels
+  const body = pick(0.18, 0.66, 0.34, 0.8, isGreen);                             // the stem itself
+  const cal = pick(0.22, 0.58, 0.42, 0.68, isGreen);                             // the calyx
+  const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+  if (body) GREEN = {
+    dark: body.dark,                                    // deepest stem green
+    stemMid: body.mid,                                  // the stem's own green
+    mid: cal ? mix(body.mid, cal.mid, 0.3) : body.mid,  // leaves: the stem green, nudged toward the calyx
+    light: body.light,                                  // where light catches the stem
+  };
+}
+
+// Watercolor leaves: broad, pointed ovals. Light from the upper side, shade below, a darker base,
+// paper grain, a soft pale midrib, and pooled pigment at the edge instead of a hard outline.
+function buildLeaves() {
+  return [0, 1, 2].map((v) => {
+    const L = 200, Wd = L * (0.36 + v * 0.04);
+    const cv = document.createElement("canvas"); cv.width = L + 16; cv.height = Math.ceil(Wd * 1.3);
+    const c = cv.getContext("2d"); c.translate(8, cv.height / 2);
+    const bend = (v - 1) * 0.06;
+    const path = new Path2D();
+    path.moveTo(0, 0);
+    path.bezierCurveTo(L * 0.18, -Wd * 0.62, L * 0.62, -Wd * 0.6, L, bend * L);
+    path.bezierCurveTo(L * 0.62, Wd * 0.48, L * 0.2, Wd * 0.52, 0, 0);
+    c.save(); c.filter = "blur(0.6px)";                      // the painting is soft, never crisp
+    c.fillStyle = rgba(GREEN.mid, 1); c.fill(path);
+    c.clip(path);
+    const blob = (x, y, rx, ry, col, b) => { c.save(); c.filter = `blur(${b}px)`; c.fillStyle = col; c.beginPath(); c.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); c.fill(); c.restore(); };
+    blob(L * 0.5, -Wd * 0.28, L * 0.38, Wd * 0.22, rgba(GREEN.light, 0.75), 14);   // light on the upper half
+    blob(L * 0.55, Wd * 0.3, L * 0.4, Wd * 0.22, rgba(GREEN.dark, 0.6), 14);       // shade on the lower half
+    blob(L * 0.12, Wd * 0.05, L * 0.14, Wd * 0.3, rgba(GREEN.dark, 0.45), 10);     // deeper near the stem
+    blob(L * 0.8, -Wd * 0.05, L * 0.16, Wd * 0.12, rgba(GREEN.light, 0.4), 8);     // a little light near the tip
+    // uneven watercolor pigment: a few darker, cooler pockets and a lighter bloom, like the painted leaves
+    const cool = [GREEN.dark[0] * 0.9, GREEN.dark[1] * 0.95, GREEN.dark[2]];   // deeper, same green
+    for (let k = 0; k < 3; k++) blob(L * (0.25 + k * 0.22 + (v - 1) * 0.04), (k % 2 ? 1 : -0.4) * Wd * 0.15, L * 0.12, Wd * 0.16, rgba(cool, 0.32), 9);
+    blob(L * (0.4 + v * 0.1), -Wd * 0.12, L * 0.1, Wd * 0.1, rgba(GREEN.light, 0.35), 7);
+    // the same paper grain the flower is painted on
+    c.globalCompositeOperation = "multiply"; c.globalAlpha = 0.09;
+    c.fillStyle = c.createPattern(PAPER, "repeat"); c.fillRect(-10, -Wd, L + 20, Wd * 2);
+    c.globalCompositeOperation = "source-over"; c.globalAlpha = 1;
+    c.filter = "blur(0.8px)";                                // soft pale midrib, no crisp vein lines
+    c.strokeStyle = rgba(GREEN.light, 0.45); c.lineWidth = 2;
+    c.beginPath(); c.moveTo(6, 0); c.quadraticCurveTo(L * 0.5, -Wd * 0.04 + bend * L * 0.4, L * 0.92, bend * L); c.stroke();
+    c.restore();
+    // watercolor edge: pigment pools a little darker at the rim, softly
+    c.save(); c.filter = "blur(1.6px)"; c.strokeStyle = rgba(GREEN.dark, 0.35); c.lineWidth = 2.6; c.stroke(path); c.restore();
+    return { img: cv, len: L, cy: cv.height / 2 };
+  });
+}
+let LEAVES = buildLeaves();
+// (the painted gardenia is no longer used — the gardenias are cut from your photos now)
+
+// ---------- marigolds, cut out of your marigold photos ----------
+// The marigolds are saturated orange against a grey or white wall, so the cut-out is a soft colour
+// matte (how orange each pixel is) instead of a flood fill. The wall colour is then taken back out
+// of the soft edge so no grey fringe is left. Leaves come straight from the photo with the leaf sprays.
+const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+async function loadImg(url) { const i = new Image(); i.src = url; await i.decode(); return i; }
+function pixels(img, crop) {
+  const W0 = img.naturalWidth, H0 = img.naturalHeight;
+  const [x0, y0, w0, h0] = crop ? [crop[0] * W0, crop[1] * H0, crop[2] * W0, crop[3] * H0].map(Math.round) : [0, 0, W0, H0];
+  const cv = document.createElement("canvas"); cv.width = w0; cv.height = h0;
+  const c = cv.getContext("2d", { willReadFrequently: true }); c.drawImage(img, x0, y0, w0, h0, 0, 0, w0, h0);
+  return { cv, c, id: c.getImageData(0, 0, w0, h0), w: w0, h: h0 };
+}
+// keep the biggest connected piece of the matte (a > 0.04), zero the rest; returns its bounding box
+function keepBiggest(al, w, h, minA = 0.04) {
+  const N = w * h, lab = new Int32Array(N); let best = 0, bestN = 0, L = 0;
+  for (let p = 0; p < N; p++) {
+    if (al[p] <= minA || lab[p]) continue;
+    L++; let m = 0; const st = [p]; lab[p] = L;
+    while (st.length) { const q = st.pop(); m++; const x = q % w, y = (q / w) | 0;
+      for (const r of [x > 0 ? q - 1 : -1, x < w - 1 ? q + 1 : -1, y > 0 ? q - w : -1, y < h - 1 ? q + w : -1])
+        if (r >= 0 && al[r] > minA && !lab[r]) { lab[r] = L; st.push(r); } }
+    if (m > bestN) { bestN = m; best = L; }
+  }
+  let minx = w, miny = h, maxx = 0, maxy = 0;
+  for (let p = 0; p < N; p++) {
+    if (lab[p] !== best) { al[p] = 0; continue; }
+    const x = p % w, y = (p / w) | 0;
+    if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y;
+  }
+  return { minx, miny, maxx, maxy, lab, best };
+}
+// write the matte into the image, taking the wall colour back out of the half-transparent edge
+function applyMatte(P, al, wall) {
+  const d = P.id.data;
+  for (let p = 0, k = 0; p < al.length; p++, k += 4) {
+    const a = al[p];
+    // take the wall colour back out of the soft edge — but never divide by a tiny alpha, which
+    // blew faint edge pixels up into bright white specks
+    if (a > 0.02 && a < 0.98) { const ad = Math.max(a, 0.45);
+      for (let j = 0; j < 3; j++) d[k + j] = clamp((d[k + j] - (1 - ad) * wall[j]) / ad, 0, 255); }
+    d[k + 3] = Math.round(a * 255);
+  }
+  P.c.putImageData(P.id, 0, 0);
+}
+function wallColour(d, w, h) {
+  let r = 0, g = 0, b = 0;
+  for (const [x, y] of [[3, 3], [w - 4, 3], [3, h - 4], [w - 4, h - 4]]) { const k = (y * w + x) * 4; r += d[k]; g += d[k + 1]; b += d[k + 2]; }
+  return [r / 4, g / 4, b / 4];
+}
+// a marigold head → a sprite in the same format as the gardenias (stub = where the stem joins)
+const orangeMatte = (r, g, b) => smooth(38, 80, r - b) * smooth(-4, 14, r - g);   // orange (not grey wall, not green leaf)
+// pink/peach (not the grey/lavender wall, not green) — and the near-white petal tips, which are
+// brighter than the wall even where they're barely pink
+const pinkMatte = (r, g, b, wl) => Math.max(smooth(6, 24, r - g),
+  smooth(wl + 16, wl + 34, 0.299 * r + 0.587 * g + 0.114 * b) * smooth(0, 7, r - g));
+const MARIGOLD_GRADE = "hue-rotate(-7deg) saturate(1.4) brightness(1.14) contrast(1.04)";   // brighter, deeper orange
+function marigoldSprite(img, crop, R, matte = orangeMatte, grade = MARIGOLD_GRADE, fillHoles = false, oval = false) {
+  const P = pixels(img, crop), d = P.id.data, N = P.w * P.h, al = new Float32Array(N);
+  const wall = wallColour(d, P.w, P.h), wl = 0.299 * wall[0] + 0.587 * wall[1] + 0.114 * wall[2];
+  for (let p = 0, k = 0; p < N; p++, k += 4) al[p] = matte(d[k], d[k + 1], d[k + 2], wl);
+  // for flowers that touch their neighbours in the photo: only what's inside this flower's own
+  // oval (the crop) counts, so a neighbour's petals never come along with it
+  if (oval) for (let p = 0; p < N; p++) {
+    const ex = ((p % P.w) + 0.5) / P.w * 2 - 1, ey = (((p / P.w) | 0) + 0.5) / P.h * 2 - 1;
+    al[p] *= smooth(1.03, 0.98, Math.hypot(ex, ey));
+  }
+  if (oval) for (let p = 0; p < N; p++) if (al[p] < 0.22) al[p] = 0;   // no faint haze of background
+  const bb = keepBiggest(al, P.w, P.h);
+  if (fillHoles) {
+    // pale, almost-white petal centres read as "wall" to the colour matte: anything the wall
+    // can't reach from the edge of the picture is part of the flower, so make it solid
+    const w = P.w, h = P.h, out = new Uint8Array(N), st = [];
+    const push = (q) => { if (!out[q] && al[q] < 0.5) { out[q] = 1; st.push(q); } };
+    for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+    for (let y = 0; y < h; y++) { push(y * w); push(y * w + w - 1); }
+    while (st.length) { const q = st.pop(), x = q % w, y = (q / w) | 0;
+      if (x > 0) push(q - 1); if (x < w - 1) push(q + 1); if (y > 0) push(q - w); if (y < h - 1) push(q + w); }
+    for (let y = bb.miny; y <= bb.maxy; y++) for (let x = bb.minx; x <= bb.maxx; x++) { const q = y * w + x; if (!out[q]) al[q] = 1; }
+  }
+  applyMatte(P, al, wall);
+  const bw = bb.maxx - bb.minx + 1, bh = bb.maxy - bb.miny + 1;
+  // the stem joins at the middle of the bottom edge of the head
+  let sx = 0, n = 0;
+  for (let y = bb.maxy - Math.round(bh * 0.06); y <= bb.maxy; y++) for (let x = bb.minx; x <= bb.maxx; x++) if (al[y * P.w + x] > 0.5) { sx += x; n++; }
+  const stubX = (n ? sx / n : (bb.minx + bb.maxx) / 2) - bb.minx, stubY = bh * 0.93;
+  const scale = (2 * R) / Math.max(bw, bh), size = Math.ceil(2 * R * 1.08), out = [];
+  for (const flip of [1, -1]) {
+    const o = document.createElement("canvas"); o.width = o.height = size;
+    const oc = o.getContext("2d"); oc.translate(size / 2, size / 2); oc.scale(flip * scale, scale);
+    if (grade) oc.filter = grade;
+    oc.drawImage(P.cv, bb.minx, bb.miny, bw, bh, -bw / 2, -bh / 2, bw, bh);
+    const stub = { x: flip * (stubX - bw / 2) * scale, y: (stubY - bh / 2) * scale };
+    out.push({ img: o, nostem: o, ...depthVariants(o, size), half: size / 2, r: R, stub, stubAng: Math.atan2(stub.y, stub.x) });
+  }
+  return out;
+}
+// the two leaf sprays in the cut-out marigold photo, turned so each points along +x from its base
+function marigoldLeaves(img) {
+  const P = pixels(img), d = P.id.data, w = P.w, h = P.h, N = w * h, al = new Float32Array(N), fl = new Float32Array(N);
+  let fx = 0, fy = 0, fn = 0;
+  for (let p = 0, k = 0; p < N; p++, k += 4) {
+    const r = d[k], g = d[k + 1], b = d[k + 2];
+    // how green, in proportion — a half-white edge pixel gets about half opacity, so no white rim
+    al[p] = clamp((g - (r + b) / 2 - 3) / 20, 0, 1) * smooth(-10, 4, g - r)
+      * smooth(30, 60, 0.299 * r + 0.587 * g + 0.114 * b);            // and not the near-black shade under the flower
+    if (r - b > 60 && r > g) { fx += p % w; fy += (p / w) | 0; fn++; }
+  }
+  fx /= fn; fy /= fn;                                                 // the flower's centre
+  // solid inside the leaf; only the true edge stays soft
+  const solid = al.map((v, p) => { const x = p % w, y = (p / w) | 0;
+    if (v < 0.35 || x < 1 || y < 1 || x > w - 2 || y > h - 2) return v;
+    for (const q of [p - 1, p + 1, p - w, p + w, p - w - 1, p - w + 1, p + w - 1, p + w + 1]) if (al[q] < 0.35) return v;
+    return 1; });
+  al.set(solid);
+  applyMatte(P, al, [255, 255, 255]);
+  const leaves = [];
+  for (let i = 0; i < 2; i++) {
+    const a2 = Float32Array.from(al);
+    const bb = keepBiggest(a2, w, h, 0.3);
+    for (let p = 0; p < N; p++) if (a2[p] > 0) al[p] = 0;           // next round finds the other spray
+    // base = the point nearest the flower, tip = the point furthest from the base
+    let bx = 0, by = 0, bd = 1e9;
+    for (let p = 0; p < N; p++) if (a2[p] > 0.5) { const x = p % w, y = (p / w) | 0, q = Math.hypot(x - fx, y - fy); if (q < bd) { bd = q; bx = x; by = y; } }
+    let tx = bx, ty = by, td = 0;
+    for (let p = 0; p < N; p++) if (a2[p] > 0.5) { const x = p % w, y = (p / w) | 0, q = Math.hypot(x - bx, y - by); if (q > td) { td = q; tx = x; ty = y; } }
+    const one = document.createElement("canvas"); one.width = w; one.height = h;
+    const oc = one.getContext("2d"); oc.drawImage(P.cv, 0, 0);
+    const md = oc.getImageData(0, 0, w, h); for (let p = 0; p < N; p++) md.data[p * 4 + 3] = Math.round(a2[p] * 255); oc.putImageData(md, 0, 0);
+    let mx = 0, my = 0, mn = 0;
+    for (let p = 0; p < N; p++) if (a2[p] > 0.5) { mx += p % w; my += (p / w) | 0; mn++; }
+    const ang = Math.atan2(my / mn - by, mx / mn - bx), L = td, half = Math.max(bb.maxx - bb.minx, bb.maxy - bb.miny) * 0.6;
+    const cv = document.createElement("canvas"); cv.width = Math.ceil(L + 16); cv.height = Math.ceil(half * 2);
+    const c = cv.getContext("2d"); c.translate(8, half); c.rotate(-ang); c.drawImage(one, -bx, -by);
+    leaves.push({ img: cv, len: L, cy: half });
+  }
+  return leaves;
+}
+async function loadMarigolds() {
+  const [head, single, sprays] = await Promise.all([loadImg("marigold.webp"), loadImg("marigold-single.webp"), loadImg("marigold-leaves.png")]);
+  const S = SETS.marigold;
+  S.blooms.push(...marigoldSprite(head, [0.15, 0.3, 0.7, 0.4], 230), ...marigoldSprite(sprays, [0.12, 0.2, 0.76, 0.6], 230));
+  S.buds.push(...marigoldSprite(single, [0.12, 0.33, 0.75, 0.4], 150));   // the small single marigold
+  S.leaves = marigoldLeaves(sprays);
+  // stem greens from the leaf sprays: deeper and cooler than the gardenia painting's
+  S.green = { dark: [52, 74, 40], mid: [92, 118, 74], light: [140, 160, 112], stemMid: [80, 106, 62] };
+  S.ready = true; renderStickers();
+}
+
+// ---------- carnations, cut out of your carnation photos ----------
+// Slender blue-green carnation leaves, drawn: long, narrow and gently curved, lighter along the middle.
+function carnationLeaves(G) {
+  return [0, 1, 2].map((v) => {
+    const L = 200, Wd = L * (0.13 + v * 0.02), bend = (v - 1) * 0.08 + 0.05;
+    const cv = document.createElement("canvas"); cv.width = L + 16; cv.height = Math.ceil(L * 0.5);
+    const c = cv.getContext("2d"), cy = cv.height / 2; c.translate(8, cy);
+    const tipY = -bend * L;
+    const path = new Path2D();
+    // a soft, full blade with a rounded tip — no needle point
+    path.moveTo(0, -Wd * 0.3);
+    path.bezierCurveTo(L * 0.3, -Wd * 1.05 + tipY * 0.25, L * 0.78, -Wd * 0.8 + tipY * 0.8, L * 0.94, tipY - Wd * 0.28);
+    path.quadraticCurveTo(L * 1.02, tipY, L * 0.94, tipY + Wd * 0.28);
+    path.bezierCurveTo(L * 0.78, Wd * 0.8 + tipY * 0.8, L * 0.3, Wd * 0.95 + tipY * 0.25, 0, Wd * 0.3);
+    path.closePath();
+    const gr = c.createLinearGradient(0, -Wd, 0, Wd);
+    gr.addColorStop(0, rgba(G.light, 1)); gr.addColorStop(0.45, rgba(G.mid, 1)); gr.addColorStop(1, rgba(G.dark, 1));
+    c.filter = "blur(0.4px)"; c.fillStyle = gr; c.fill(path);
+    c.strokeStyle = rgba(G.light, 0.5); c.lineWidth = 1.2;                    // the pale midrib
+    c.beginPath(); c.moveTo(4, 0); c.quadraticCurveTo(L * 0.45, tipY * 0.35 - Wd * 0.1, L * 0.86, tipY * 0.92); c.stroke();
+    return { img: cv, len: L, cy };
+  });
+}
+// Recolour sprites to match a reference flower: each one's average hue, saturation and lightness
+// is shifted onto the reference's, while its own petal shading and detail are kept.
+function matchColour(list, ref, lightMatch = 0.6) {
+  const stats = (cv) => {
+    const x = cv.getContext("2d", { willReadFrequently: true }), id = x.getImageData(0, 0, cv.width, cv.height), d = id.data;
+    let hx = 0, hy = 0, ss = 0, ll = 0, n = 0;
+    for (let k = 0; k < d.length; k += 4) {
+      if (d[k + 3] < 128) continue;
+      const [h, s2, l] = rgbToHsl(d[k], d[k + 1], d[k + 2]), w = s2;      // greyish pixels barely count for hue
+      hx += Math.cos(h * Math.PI / 180) * w; hy += Math.sin(h * Math.PI / 180) * w; ss += s2; ll += l; n++;
+    }
+    return { x, id, h: Math.atan2(hy, hx) * 180 / Math.PI, s: ss / n, l: ll / n };
+  };
+  const R = stats(ref.img);
+  for (const sp of list) {
+    // (the reference itself is evened out too, so its own stray tints match the rest)
+    const S2 = stats(sp.img), d = S2.id.data, ks = R.s / (S2.s || 1), dl = (R.l - S2.l) * lightMatch;
+    for (let k = 0; k < d.length; k += 4) {
+      if (!d[k + 3]) continue;
+      const [h, s2, l] = rgbToHsl(d[k], d[k + 1], d[k + 2]);
+      // the reference's pink hue, keeping only a little of this flower's own hue variation
+      const off = clamp((((h - S2.h + 540) % 360) - 180) * 0.3, -8, 8);
+      const [r, g, bl] = hslToRgb(R.h + off, clamp(s2 * ks, 0, 1), clamp(l + dl * (1 - Math.abs(2 * l - 1)), 0, 1));
+      d[k] = r; d[k + 1] = g; d[k + 2] = bl;
+    }
+    S2.x.putImageData(S2.id, 0, 0);
+  }
+}
+async function loadCarnations() {
+  const im = await Promise.all([1, 2, 3, 4, 5].map((n) => loadImg(`carnation-${n}.${n >= 4 ? "webp" : "png"}`)));
+  const S = SETS.carnation, grade = "brightness(1.13) saturate(1.15) contrast(1.03)", cut = (i, crop, R) => marigoldSprite(im[i], crop, R, pinkMatte, grade, true);
+  S.blooms.push(
+    ...cut(1, [0.25, 0.03, 0.5, 0.42], 230),      // the full round pink one
+    ...cut(2, [0.18, 0.40, 0.66, 0.27], 230),     // the frilly pink one
+    ...cut(0, [0.05, 0.03, 0.72, 0.38], 230),     // the soft pink one, side-on
+    ...cut(3, [0.16, 0.22, 0.55, 0.35], 230),     // the pale blush one
+    ...cut(4, [0.18, 0.14, 0.6, 0.42], 230));     // the peach one
+  S.buds.push(...cut(2, [0.18, 0.40, 0.66, 0.27], 150), ...cut(3, [0.16, 0.22, 0.55, 0.35], 150));   // small ones
+  matchColour([...S.blooms, ...S.buds], S.blooms[0]);   // every carnation in the same pink as the round one
+  // the stems in the photos are a cool blue-green
+  S.green = { dark: [46, 80, 68], mid: [92, 128, 112], light: [150, 178, 162], stemMid: [74, 110, 94] };
+  S.leaves = carnationLeaves(S.green);
+  S.ready = true; renderStickers();
+}
+
+// ---------- hydrangeas, cut out of your hydrangea photos ----------
+const blueMatte = (r, g, b) => smooth(10, 32, b - r) * smooth(-6, 8, b - g);   // blue/periwinkle (not white, beige or green)
+// one leaf cut from a photo on a white background: crop in pixels, base = where its stalk starts
+function leafFromPhoto(img, [x0, y0, w0, h0], [bx0, by0], matte = null) {
+  const cv = document.createElement("canvas"); cv.width = w0; cv.height = h0;
+  const c = cv.getContext("2d", { willReadFrequently: true }); c.drawImage(img, x0, y0, w0, h0, 0, 0, w0, h0);
+  const P = { cv, c, id: c.getImageData(0, 0, w0, h0), w: w0, h: h0 }, d = P.id.data, N = w0 * h0, al = new Float32Array(N);
+  for (let p = 0, k = 0; p < N; p++, k += 4) {
+    const r = d[k], g = d[k + 1], b = d[k + 2];
+    al[p] = matte ? matte(r, g, b) : clamp((g - (r + b) / 2 - 4) / 22, 0, 1) * smooth(-10, 4, g - r);   // green, in proportion (soft edge)
+  }
+  if (matte) {   // glossy leaves have pale veins and shine: fill anything enclosed by the leaf
+    const out = new Uint8Array(N), st = [];
+    const push = (q) => { if (!out[q] && al[q] < 0.5) { out[q] = 1; st.push(q); } };
+    for (let x = 0; x < w0; x++) { push(x); push((h0 - 1) * w0 + x); }
+    for (let y = 0; y < h0; y++) { push(y * w0); push(y * w0 + w0 - 1); }
+    while (st.length) { const q = st.pop(), x = q % w0, y = (q / w0) | 0;
+      if (x > 0) push(q - 1); if (x < w0 - 1) push(q + 1); if (y > 0) push(q - w0); if (y < h0 - 1) push(q + w0); }
+    for (let q = 0; q < N; q++) if (!out[q]) al[q] = 1;
+  }
+  const solid = al.map((v, p) => { const x = p % w0, y = (p / w0) | 0;
+    if (v < 0.35 || x < 1 || y < 1 || x > w0 - 2 || y > h0 - 2) return v;
+    for (const q of [p - 1, p + 1, p - w0, p + w0]) if (al[q] < 0.35) return v;
+    return 1; });
+  al.set(solid);
+  keepBiggest(al, w0, h0, 0.3);
+  applyMatte(P, al, wallColour(d, w0, h0));
+  const bx = bx0 - x0, by = by0 - y0;
+  let mx = 0, my = 0, mn = 0, L = 0, half = 0;
+  for (let p = 0; p < N; p++) if (al[p] > 0.5) { mx += p % w0; my += (p / w0) | 0; mn++; }
+  const ang = Math.atan2(my / mn - by, mx / mn - bx), ca = Math.cos(ang), sa = Math.sin(ang);
+  for (let p = 0; p < N; p++) if (al[p] > 0.5) { const dx = p % w0 - bx, dy = ((p / w0) | 0) - by;
+    L = Math.max(L, dx * ca + dy * sa); half = Math.max(half, Math.abs(-dx * sa + dy * ca)); }
+  half += 4;
+  const out = document.createElement("canvas"); out.width = Math.ceil(L + 16); out.height = Math.ceil(half * 2);
+  const oc = out.getContext("2d"); oc.translate(8, half); oc.rotate(-ang); oc.drawImage(cv, -bx, -by);
+  return { img: out, len: L, cy: half };
+}
+async function loadHydrangeas() {
+  const im = await Promise.all([1, 2, 3, 4].map((n) => loadImg(`hydrangea-${n}.webp`)));
+  const S = SETS.hydrangea, grade = "brightness(1.28) contrast(0.86) saturate(1.02)",   // light and airy, shadows lifted
+    cut = (i, crop, R) => marigoldSprite(im[i], crop, R, blueMatte, grade, true);
+  S.blooms.push(
+    ...cut(3, [0.04, 0.13, 0.92, 0.62], 230),     // the full round blue one (the colour all of them take)
+    ...cut(0, [0.17, 0.13, 0.75, 0.36], 230),     // the lavender-blue one
+    ...cut(1, [0.13, 0.12, 0.79, 0.53], 230),     // the airy, frilly one
+    ...cut(2, [0.42, 0.04, 0.52, 0.33], 230));    // the one in the vase
+  S.buds.push(...cut(0, [0.17, 0.13, 0.75, 0.36], 150), ...cut(2, [0.42, 0.04, 0.52, 0.33], 150));   // small ones
+  matchColour([...S.blooms, ...S.buds], S.blooms[0], 1.6);   // every hydrangea in the same blue, and equally deep
+  // lift the shadows between the florets so they read light and airy, not dark blue
+  for (const sp of new Set([...S.blooms, ...S.buds].map((x) => x.img))) {
+    const x = sp.getContext("2d", { willReadFrequently: true }), id = x.getImageData(0, 0, sp.width, sp.height), d = id.data;
+    for (let k = 0; k < d.length; k += 4) {
+      if (!d[k + 3]) continue;
+      const [h, s2, l] = rgbToHsl(d[k], d[k + 1], d[k + 2]);
+      const [r, g, bl] = hslToRgb(hueMix(h, 214, 0.5), Math.min(1, s2 * 1.4), 1 - (1 - l) * 0.8);   // a clearer, bluer blue
+      d[k] = r; d[k + 1] = g; d[k + 2] = bl;
+    }
+    x.putImageData(id, 0, 0);
+  }
+  // the three big serrated leaves from the first photo (crop, then where the leaf stalk starts)
+  const L0 = im[0];
+  S.leaves = [
+    leafFromPhoto(L0, [66, 522, 240, 226], [304, 628]),
+    leafFromPhoto(L0, [356, 686, 276, 162], [364, 838]),
+  ];
+  S.green = { dark: [52, 92, 40], mid: [96, 140, 70], light: [150, 186, 112], stemMid: [88, 132, 64] };
+  S.ready = true; renderStickers();
+}
+
+// ---------- sunflowers, cut out of your sunflower photos ----------
+// golden petals (the dark centre is enclosed by petals, so it is filled in as part of the flower)
+const yellowMatte = (r, g, b) => smooth(45, 95, r - b) * smooth(-14, 2, r - g);
+async function loadSunflowers() {
+  const im = await Promise.all(["sunflower-1.webp", "sunflower-3.png"].map(loadImg));
+  const S = SETS.sunflower, grade = "brightness(1.12) saturate(1.22) contrast(1.02)",   // bright, sunny gold
+    cut = (i, crop, R) => marigoldSprite(im[i], crop, R, yellowMatte, grade, true);
+  S.blooms.push(
+    ...cut(1, [0.06, 0.36, 0.78, 0.44], 230),     // the full-face one (the sticker)
+    ...cut(0, [0.23, 0.15, 0.55, 0.31], 230),     // the top one on black
+    ...cut(0, [0.0, 0.64, 0.54, 0.35], 230));     // the lower-left one on black
+  S.buds.push(...cut(0, [0.47, 0.5, 0.53, 0.19], 150));   // the small side-on one
+  // the big heart-shaped leaves from the photo on black (crop, then where the leaf stalk starts)
+  S.leaves = [
+    leafFromPhoto(im[0], [392, 198, 190, 224], [396, 404]),
+    leafFromPhoto(im[0], [68, 470, 120, 158], [178, 622]),
+  ];
+  S.green = { dark: [66, 104, 46], mid: [118, 158, 80], light: [172, 202, 122], stemMid: [106, 148, 72] };
+  S.ready = true; renderStickers();
+}
+
+// ---------- bees (with the sunflowers), cut out of your watercolour bee painting ----------
+// Anything that isn't white paper is the bee; the wings are pale, so they come out softly see-through.
+const BEES = [];
+async function loadBees() {
+  const img = await loadImg("bees.png");
+  // [crop in fractions, which way the bee faces in the painting]
+  for (const [crop, face] of [[[0.14, 0.15, 0.42, 0.38], 1], [[0.39, 0.49, 0.48, 0.36], -1]]) {
+    const P = pixels(img, crop), d = P.id.data, N = P.w * P.h, al = new Float32Array(N);
+    for (let p = 0, k = 0; p < N; p++, k += 4) al[p] = smooth(10, 70, 255 - Math.min(d[k], d[k + 1], d[k + 2]));
+    const bb = keepBiggest(al, P.w, P.h, 0.08);
+    applyMatte(P, al, [255, 255, 255]);
+    const bw = bb.maxx - bb.minx + 1, bh = bb.maxy - bb.miny + 1;
+    const o = document.createElement("canvas"); o.width = bw; o.height = bh;
+    o.getContext("2d").drawImage(P.cv, bb.minx, bb.miny, bw, bh, 0, 0, bw, bh);
+    BEES.push({ img: o, face, w: bw, h: bh });
+  }
+}
+loadBees().catch((e) => console.warn("Could not load bees.png", e));
+
+// Up to three bees drifting in the open air just beyond the flowers — never on them. Each one
+// wanders back and forth over and beside your head along a path a little outside the outer flowers.
+const beeState = [0, 1, 2].map((i) => ({
+  ph: Math.random() * 6.28, ph2: Math.random() * 6.28, spd: 0.16 + Math.random() * 0.1,
+  sprite: i % 2, x: null, y: null, dir: 1, tilt: 0, out: 0.9 + Math.random() * 0.5, delay: i * 0.6,
+}));
+function drawBees(t, p, dt, ol, fw, base, flowers) {
+  if (!BEES.length) return;
+  const W = canvas.width, H = canvas.height, k = 1 - Math.exp(-dt * 5);
+  for (const b of beeState) {
+    const show = clamp((p - 0.55 - b.delay * 0.1) / 0.3, 0, 1);
+    if (show <= 0) { b.x = null; continue; }
+    // sweep across the top and down the sides (190°–350°), with a lazy loop on top of that
+    const deg = 270 + 78 * Math.sin(t * b.spd + b.ph) + 10 * Math.sin(t * b.spd * 3.1 + b.ph2);
+    const ang = deg * Math.PI / 180, T = outlineAt(ol, ang);
+    if (!T) continue;
+    // outside the outer ring of flowers (they reach about base*0.16 + their own size past you)
+    const dist = Math.max(fw * 1.0, base * 0.27) * b.out + Math.sin(t * 1.3 + b.ph2) * base * 0.03;
+    let tx = T.x + T.nx * dist, ty = T.y + T.ny * dist + Math.sin(t * 2.2 + b.ph) * base * 0.012;
+    const m = base * 0.05, size = base * 0.075;
+    tx = clamp(tx, m, W - m); ty = clamp(ty, m, H - m * 2);
+    // never on a flower: if the spot is over one (say where the screen edge squeezes it in),
+    // nudge it out to the side of that flower, keeping clear of the person too
+    for (let it2 = 0; it2 < 4; it2++) {
+      let moved = false;
+      for (const f of flowers) {
+        const dx = tx - f.hx, dy = ty - f.hy, need = f.rpx * 1.05 + size * 0.55, d = Math.hypot(dx, dy);
+        if (d >= need) continue;
+        const ux = d > 1 ? dx / d : (tx < W / 2 ? -1 : 1), uy = d > 1 ? dy / d : 0;
+        tx = f.hx + ux * need; ty = f.hy + uy * need; moved = true;
+      }
+      tx = clamp(tx, m, W - m); ty = clamp(ty, m, H - m * 2);
+      if (!moved) break;
+    }
+    if (b.x == null) { b.x = tx; b.y = ty; }
+    const vx = (tx - b.x), vy = (ty - b.y);
+    b.x += vx * k; b.y += vy * k;
+    if (Math.abs(vx) > base * 0.002) b.dir = vx > 0 ? 1 : -1;            // face the way it's flying
+    b.tilt += (clamp(vy / (base * 0.02), -1, 1) * 0.25 - b.tilt) * k;
+    const spr = BEES[b.sprite], s = size / Math.max(spr.w, spr.h);
+    const flip = b.dir * spr.face;                                        // mirror so it faces its flight
+    const flutter = 1 + Math.sin(t * 60 + b.ph) * 0.035;                  // a quick wing-beat shimmer
+    ctx.globalAlpha = show;
+    ctx.setTransform(flip * s, 0, 0, s * flutter, b.x, b.y);
+    ctx.rotate(b.tilt * flip);
+    ctx.drawImage(spr.img, -spr.w / 2, -spr.h / 2);
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  }
+}
+
+// ---------- dahlias, cut out of your dahlia photos ----------
+// for the photo on a warm beige wall: only clearly rosy/coral colour counts (the wall is a little warm itself)
+const warmWallMatte = (r, g, b) => smooth(22, 45, r - g);
+async function loadDahlias() {
+  const im = await Promise.all(["dahlia-1.webp", "dahlia-2.png", "dahlia-3.png", "dahlia-4.png", "dahlia-5.png"].map(loadImg));
+  const S = SETS.dahlia, grade = "brightness(1.1) saturate(1.15) contrast(1.02)",   // bright and fresh
+    cut = (i, crop, R) => marigoldSprite(im[i], crop, R, i === 3 ? warmWallMatte : pinkMatte, grade, true);
+  S.blooms.push(
+    ...cut(1, [0.18, 0.23, 0.65, 0.37], 230),     // the big pink-and-peach one (the colour all of them take)
+    ...cut(0, [0.36, 0.09, 0.47, 0.39], 230),     // the one with leaves
+    ...cut(4, [0.13, 0.17, 0.69, 0.53], 230),     // the big open one
+    ...cut(3, [0.22, 0.21, 0.5, 0.39], 230),      // the sunset one
+    ...cut(2, [0.17, 0.32, 0.58, 0.31], 230));    // the round pompon one
+  S.buds.push(...cut(2, [0.17, 0.32, 0.58, 0.31], 150), ...cut(3, [0.22, 0.21, 0.5, 0.39], 150));   // small ones
+  matchColour([...S.blooms, ...S.buds], S.blooms[0], 1.5);   // every dahlia in the same pink, equally light
+  // the serrated leaves from the first photo (crop, then where the leaf stalk starts)
+  S.leaves = [
+    leafFromPhoto(im[0], [336, 498, 98, 152], [392, 506]),
+  ];
+  S.green = { dark: [60, 100, 45], mid: [110, 155, 75], light: [165, 200, 120], stemMid: [100, 145, 68] };
+  S.ready = true; renderStickers();
+}
+
+// ---------- gardenias, cut out of your gardenia photos ----------
+// white petals against green leaves: bright and not green (the creamy-yellow heart is enclosed by
+// petals, so it's filled in as part of the flower)
+const whiteMatte = (r, g, b) => smooth(118, 165, 0.299 * r + 0.587 * g + 0.114 * b) * smooth(14, 4, g - r);   // creamy-yellow (r > g) stays
+// the dark glossy leaves against the soft green background: darker than it, and green
+const darkLeafMatte = (r, g, b) => smooth(98, 76, 0.299 * r + 0.587 * g + 0.114 * b) * smooth(-6, 6, g - r);
+async function loadGardenias() {
+  const im = await Promise.all([1, 2, 3].map((n) => loadImg(`gardenia-photo-${n}.webp`)));
+  const S = SETS.gardenia, grade = "brightness(1.04) contrast(1.03)",
+    cut = (i, crop, R) => marigoldSprite(im[i], crop, R, whiteMatte, grade, true, true);
+  // (the third photo's flowers sit on a pale, misty background too close to their soft petal
+  // shading to cut cleanly, so only its glossy leaves are used)
+  S.blooms.push(
+    ...cut(0, [0.56, 0.475, 0.391, 0.408], 230),    // from the bush: bottom right (the sticker)
+    ...cut(1, [0.309, 0.367, 0.662, 0.579], 230),   // the rose-like one, front
+    ...cut(0, [0.455, 0.071, 0.412, 0.378], 230),   // from the bush: top right
+    ...cut(0, [0.06, 0.611, 0.364, 0.336], 230));   // from the bush: bottom left
+  S.buds.push(...cut(0, [0.455, 0.071, 0.412, 0.378], 150), ...cut(0, [0.56, 0.475, 0.391, 0.408], 150));   // small ones
+  // the two glossy leaves on the branch in the third photo (crop, then where the leaf stalk starts)
+  S.leaves = [
+    leafFromPhoto(im[2], [60, 862, 430, 392], [478, 1244], darkLeafMatte),
+    leafFromPhoto(im[2], [134, 1288, 342, 222], [468, 1500], darkLeafMatte),
+  ];
+  S.green = { dark: [22, 52, 28], mid: [48, 92, 52], light: [100, 140, 90], stemMid: [58, 96, 54] };
+  S.ready = true; renderStickers();
+}
+
+// the flower sets you can switch between (stickers at the top right)
+const SETS = {
+  gardenia: { label: "Gardenia", blooms: [], buds: [], leaves: null, green: null, glow: [235, 245, 255], ready: false },
+  marigold: { label: "Marigold", blooms: [], buds: [], leaves: null, green: null, glow: [255, 214, 150], sparkle: false, ready: false, leafScale: 1.15 },
+  carnation: { label: "Carnation", blooms: [], buds: [], leaves: null, green: null, glow: [255, 226, 234], sparkle: false, ready: false, leafScale: 1.05, sizeScale: 1.4 },
+  hydrangea: { label: "Hydrangea", blooms: [], buds: [], leaves: null, green: null, glow: [215, 230, 255], sparkle: false, ready: false, leafScale: 0.95, sizeScale: 1.3 },
+  sunflower: { label: "Sunflower", blooms: [], buds: [], leaves: null, green: null, glow: [255, 236, 170], sparkle: false, bees: true, ready: false, leafScale: 1.0, sizeScale: 1.3 },
+  dahlia: { label: "Dahlia", blooms: [], buds: [], leaves: null, green: null, glow: [255, 222, 214], sparkle: false, ready: false, leafScale: 1.0, sizeScale: 1.0 },
+};
+let flowerKind = "gardenia";
+try { if (SETS[localStorage.getItem("flower")]) flowerKind = localStorage.getItem("flower"); } catch {}
+loadMarigolds().catch((e) => console.warn("Could not load the marigold photos", e));
+loadCarnations().catch((e) => console.warn("Could not load the carnation photos", e));
+loadHydrangeas().catch((e) => console.warn("Could not load the hydrangea photos", e));
+loadSunflowers().catch((e) => console.warn("Could not load the sunflower photos", e));
+loadDahlias().catch((e) => console.warn("Could not load the dahlia photos", e));
+loadGardenias().catch((e) => console.warn("Could not load the gardenia photos", e));
+
+// one sticker per flower set, cut from that set's own flower
+function renderStickers() {
+  const box = $("stickers"); if (!box) return;
+  box.innerHTML = "";
+  Object.entries(SETS).forEach(([key, S], i) => {
+    const b = document.createElement("button");
+    b.className = "sticker" + (key === flowerKind ? " on" : "") + (S.ready && S.blooms.length ? "" : " loading");
+    b.style.setProperty("--rot", `${i % 2 ? 7 : -6}deg`);
+    b.title = `${S.label} (F to switch)`;
+    if (S.blooms.length) { const im = new Image(); im.src = S.blooms[0].img.toDataURL(); im.alt = S.label; b.appendChild(im); }
+    const t = document.createElement("span"); t.textContent = S.label; b.appendChild(t);
+    b.onclick = () => chooseFlower(key);
+    box.appendChild(b);
+  });
+}
+function chooseFlower(key) {
+  if (!SETS[key]?.ready) return;
+  flowerKind = key;
+  try { localStorage.setItem("flower", key); } catch {}
+  document.querySelectorAll(".sticker").forEach((b, i) => b.classList.toggle("on", Object.keys(SETS)[i] === key));
+}
+renderStickers();
+window._sets = SETS;   // for debugging in the console
+
+// a four-point twinkle
+function drawTwinkle(x, y, r, a) {
+  if (a <= 0.02) return;
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.globalAlpha = a;
+  ctx.translate(x, y);
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 0.5);
+  g.addColorStop(0, "rgba(255,255,255,0.9)"); g.addColorStop(1, "rgba(200,230,255,0)");
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r * 0.5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "rgba(240,248,255,0.95)";
+  for (let k = 0; k < 2; k++) {
+    ctx.rotate(Math.PI / 2);
+    ctx.beginPath();
+    ctx.moveTo(0, -r); ctx.lineTo(r * 0.09, 0); ctx.lineTo(0, r); ctx.lineTo(-r * 0.09, 0); ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------- lilies spread evenly along your outline ----------
+// Your outline (shoulder → over your head → shoulder) is traced every frame. Lilies are spaced
+// evenly along its length and peek out from behind it; only a few rise on a slender stem.
+let sprouts = [];
+let sproutsReady = false;
+const RAYS = 120;
+let rayDist = new Float32Array(RAYS);   // smoothed outline distance per ray (0 = unknown)
+let olCenter = null, lilyScale = 0;
+const RAY_A0 = (188 * Math.PI) / 180, RAY_A1 = (352 * Math.PI) / 180;
+
+function screenToVideoNorm(x, y) {
+  const vx = crop.sx + (1 - x / canvas.width) * crop.sw;
+  const vy = crop.sy + (y / canvas.height) * crop.sh;
+  return [vx / crop.vw, vy / crop.vh];
+}
+function personAtScreen(x, y) {
+  if (face) {                                            // inside your face/head = always you
+    // kept inside the solid face shape drawn into the cut-out, so they always agree
+    const ex = (x - face.x) / (face.w * 0.5), ey = (y - (face.y + face.w * 0.6)) / (face.w * 0.62);
+    if (ex * ex + ey * ey < 1) return 1;
+  }
+  if (!maskData) return 0;
+  const [nx, ny] = screenToVideoNorm(x, y);
+  if (nx < 0 || nx >= 1 || ny < 0 || ny >= 1) return 0;
+  if (!keptAt(nx, ny)) return 0;                         // someone else in the background
+  const v = maskData[Math.floor(ny * maskH) * maskW + Math.floor(nx * maskW)];
+  return invertMask ? 1 - v : v;
+}
+
+// remove your hands from a (low-res) effect layer, with soft edges
+function cutHands(c, scale) {
+  if (!handPts.length) return;
+  c.save(); c.globalCompositeOperation = "destination-out";
+  for (const h of handPts) {
+    const x = h.x * scale, y = h.y * scale, r = h.r * scale * 1.5;
+    const g = c.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, "rgba(0,0,0,1)"); g.addColorStop(0.7, "rgba(0,0,0,1)"); g.addColorStop(1, "rgba(0,0,0,0)");
+    c.fillStyle = g; c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
+  }
+  c.restore();
+}
+// keep a (low-res) effect layer only around your face — so skin glow/smoothing never touches your hands
+function keepFaceOnly(c, scale) {
+  if (!face) return;
+  const x = face.x * scale, y = (face.y + face.w * 0.55) * scale, r = face.w * 0.95 * scale;
+  c.save(); c.globalCompositeOperation = "destination-in";
+  const g = c.createRadialGradient(x, y, r * 0.6, x, y, r);
+  g.addColorStop(0, "rgba(0,0,0,1)"); g.addColorStop(1, "rgba(0,0,0,0)");
+  c.fillStyle = g; c.fillRect(0, 0, c.canvas.width, c.canvas.height);
+  c.restore();
+}
+
+// is this point on one of your hands? (flowers should grow from your head and shoulders, not your fingers)
+function nearHand(x, y) {
+  for (const h of handPts) { const dx = x - h.x, dy = y - h.y; if (dx * dx + dy * dy < h.r * h.r * 1.4) return true; }
+  return false;
+}
+
+// trace your outline as a polyline, by marching rays out from your upper chest
+function traceOutline() {
+  if (!face) return null;
+  const W = canvas.width, H = canvas.height, fw = face.w;
+  // steady fan center (face landmarks wobble a little frame to frame)
+  // (kept inside the frame — in a close-up it would otherwise land below the screen and trace nothing)
+  const tcx = clamp(face.x, 2, W - 2), tcy = Math.min(face.y + fw * 1.5, H - 2);
+  olCenter = olCenter ? { x: olCenter.x + (tcx - olCenter.x) * 0.15, y: olCenter.y + (tcy - olCenter.y) * 0.15 } : { x: tcx, y: tcy };
+  const cx = olCenter.x, cy = olCenter.y;
+  const step = fw * 0.035;
+  const pts = [];
+  for (let i = 0; i < RAYS; i++) {
+    const a = RAY_A0 + (i / (RAYS - 1)) * (RAY_A1 - RAY_A0);
+    const dx = Math.cos(a), dy = Math.sin(a);
+    let d = fw * 0.2, inside = false, found = 0;
+    for (; d < fw * 6; d += step) {
+      const x = cx + dx * d, y = cy + dy * d;
+      if (x < 0 || x > W || y < 0 || y > H) { if (inside) break; else continue; }   // off-frame: stop only once past you
+      if (nearHand(x, y)) continue;                         // skip over your hands — find your real outline
+      if (personAtScreen(x, y) > 0.38) inside = true;
+      else if (inside) { found = d; break; }
+    }
+    // keep the last good reading if this frame missed (a flicker no longer moves anything)
+    if (found) rayDist[i] = rayDist[i] ? rayDist[i] + (found - rayDist[i]) * 0.2 : found;
+    if (rayDist[i]) pts.push({ x: cx + dx * rayDist[i], y: cy + dy * rayDist[i], nx: dx, ny: dy });
+  }
+  if (pts.length < 8) return null;
+  // cumulative length so lilies can be spaced evenly
+  let L = 0; pts[0].s = 0;
+  for (let i = 1; i < pts.length; i++) { L += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y); pts[i].s = L; }
+  return { pts, L, cx, cy };
+}
+// your outline in a fixed direction from the fan center (interpolated between rays)
+function outlineAt(ol, ang) {
+  let fi = ((ang - RAY_A0) / (RAY_A1 - RAY_A0)) * (RAYS - 1);
+  fi = clamp(fi, 0, RAYS - 1);
+  let i0 = Math.floor(fi), i1 = Math.min(RAYS - 1, i0 + 1), t = fi - i0;
+  let d0 = rayDist[i0], d1 = rayDist[i1];
+  if (!d0 || !d1) {                                      // no reading here: borrow the nearest one
+    for (let k = 1; k < 20 && !(d0 || d1); k++) d0 = rayDist[clamp(i0 - k, 0, RAYS - 1)] || rayDist[clamp(i1 + k, 0, RAYS - 1)];
+    d0 = d0 || d1; d1 = d1 || d0; if (!d0) return null;
+  }
+  const d = d0 + (d1 - d0) * t, nx = Math.cos(ang), ny = Math.sin(ang);
+  return { x: ol.cx + nx * d, y: ol.cy + ny * d, nx, ny };
+}
+function pointAt(ol, u) {
+  const s = u * ol.L, p = ol.pts;
+  let i = 1; while (i < p.length - 1 && p[i].s < s) i++;
+  const a = p[i - 1], b = p[i], t = (s - a.s) / Math.max(1e-6, b.s - a.s);
+  const nx = a.nx + (b.nx - a.nx) * t, ny = a.ny + (b.ny - a.ny) * t, nl = Math.hypot(nx, ny) || 1;
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, nx: nx / nl, ny: ny / nl };
+}
+
+function growSprouts(ol) {
+  const fw = face.w;
+  sprouts = [];
+  const mk = (ang, ring, i, u) => {
+    const bud = Math.random() < 0.32, stem = false;        // closed buds mixed in among the blooms
+    const r0 = Math.random();                              // a real mix: small, medium and a few big
+    const sz = bud ? rand(0.08, 0.12)                      // buds stay small
+      : r0 < 0.35 ? rand(0.13, 0.2) : r0 < 0.75 ? rand(0.24, 0.36) : rand(0.42, 0.58);
+    sprouts.push({
+      u, ang, ring, bud, stem, px: null, py: null,
+      // radius in face-widths: big blooms, a touch bigger the further back they sit
+      size: sz,                                            // radius in face-widths
+      out: [rand(-0.02, 0.1), rand(0.2, 0.32), rand(0.38, 0.52), 0][ring], // how far past your outline, in face-widths
+      tilt: rand(-0.35, 0.35), bend: (Math.random() < 0.5 ? -1 : 1) * rand(0.12, 0.3),
+      // one or two watercolor leaves along the stem, on alternating sides
+      leaves: (() => { const n = Math.random() < 0.55 ? 2 : 1, s0 = Math.random() < 0.5 ? 1 : -1;
+        return Array.from({ length: n }, (_, j) => ({ t: n === 1 ? rand(0.4, 0.6) : (j ? rand(0.55, 0.72) : rand(0.28, 0.42)),
+          side: j % 2 ? -s0 : s0, spread: rand(0.55, 0.9), sz: rand(1.0, 1.35), v: (Math.random() * 3) | 0 })); })(),
+      sprite: Math.random(),                               // which cut-out (and mirrored or not)
+      // inner ring first (top of the head, then down), then the rings spread outward
+      delay: ring * 0.32 + Math.abs(u - 0.5) * 0.6 + rand(0, 0.12),
+      sway: rand(0, 10),
+      tw: [0, 1].map(() => ({ ox: rand(-1, 1), oy: rand(-1.1, 0.2), sp: rand(1.2, 2.6), ph: rand(0, 6.28), r: rand(0.14, 0.24) })),
+      ox: 0, oy: 0, vx: 0, vy: 0, rotOff: 0,
+    });
+  };
+  // inner ring: evenly spaced along your outline, then pinned to that direction
+  const N = clamp(Math.round(ol.L / (fw * 1.15)), 5, 11);   // spaced out a little
+  for (let i = 0; i < N; i++) {
+    const u = (i + 0.5 + rand(-0.2, 0.2)) / N;
+    const P0 = pointAt(ol, u);
+    mk(Math.atan2(P0.y - ol.cy, P0.x - ol.cx), 0, i, u);
+  }
+  // middle and outer rings: spread across the frame behind you, staggered so they don't line up,
+  // reaching down beside your shoulders too
+  const A0 = (172 * Math.PI) / 180, A1 = (368 * Math.PI) / 180;
+  for (const [ring, M] of [[1, 6], [2, 7]]) {
+    for (let i = 0; i < M; i++) {
+      const u = (i + (ring === 1 ? 0.5 : 0) + rand(-0.25, 0.25)) / (M - (ring === 1 ? 0 : 1));
+      mk(A0 + clamp(u, 0, 1) * (A1 - A0), ring, i, clamp(u, 0, 1));
+    }
+  }
+  // a row growing up from below the bottom edge of the screen (behind you, so they show beside you)
+  const NG = 9;
+  for (let i = 0; i < NG; i++) {
+    mk(0, 3, i, 0.5);
+    const f = sprouts[sprouts.length - 1];
+    f.ground = true;
+    f.gx = (i + 0.5 + rand(-0.3, 0.3)) / NG;               // across the bottom
+    const r1 = Math.random();                              // big blooms along the bottom, a couple really big
+    f.size = f.bud ? rand(0.1, 0.14) : r1 < 0.35 ? rand(0.34, 0.46) : r1 < 0.8 ? rand(0.52, 0.7) : rand(0.75, 0.9);
+    f.gh = rand(0.08, 0.28);                               // how high it rises above the bottom edge
+    f.delay = 0.3 + rand(0, 0.45);
+  }
+  // the back rings draw first, so the flowers tucked against you sit on top
+  sprouts.sort((a, b) => b.ring - a.ring || b.size - a.size);
+  return true;
+}
+
+function drawSprouts(t, p, dt) {
+  if (!face) return;
+  const ol = traceOutline();
+  if (p <= 0) { sproutsReady = false; return; }
+  if (!ol) return;
+  if (!sproutsReady) sproutsReady = growSprouts(ol);
+
+  // a steadier face size, so the lilies don't pulse as the tracker wobbles
+  lilyScale = lilyScale ? lilyScale + (face.w - lilyScale) * (1 - Math.exp(-dt * 3)) : face.w;
+  const fw = lilyScale, base = Math.min(canvas.width, canvas.height);
+  const springK = 5, damp = Math.exp(-4.5 * dt), maxV = base * 4;
+  const twinkles = [], items = [];
+  const SET = SETS[flowerKind].ready ? SETS[flowerKind] : SETS.gardenia;
+  const G = SET.green || GREEN, LV = SET.leaves || LEAVES, GLOW = SET.glow;
+
+  for (const f of sprouts) {
+    const g = clamp((p * 1.9 - f.delay) / 0.6, 0, 1);
+    if (f.ox || f.oy || f.vx || f.vy || handPts.length) {
+      f.vx += -springK * f.ox * dt; f.vy += -springK * f.oy * dt;
+      f.vx *= damp; f.vy *= damp;
+      f.ox += f.vx * dt; f.oy += f.vy * dt;
+      f.rotOff += f.vx * dt * 0.003;
+      if (Math.abs(f.ox) + Math.abs(f.oy) + Math.abs(f.vx) + Math.abs(f.vy) < 0.05) f.ox = f.oy = f.vx = f.vy = 0;
+    }
+    if (g <= 0) continue;
+    const e = easeOutCubic(g);
+    const W = canvas.width, H = canvas.height;
+    let P, rpx, hx, hy, ax, ay;
+    if (f.ground) {
+      // bottom row: rises from below the frame on its stem
+      rpx = (f.bud ? clamp(f.size * fw, base * 0.025, base * 0.06) : clamp(f.size * fw, base * 0.06, base * 0.24)) * (SET.sizeScale || 1);
+      const x0 = f.gx * W;
+      P = { x: x0, y: H, nx: 0, ny: -1 };
+      hx = x0 + Math.sin(t * 0.8 + f.sway) * fw * 0.012 + f.ox;
+      hy = H + rpx * 1.2 - (f.gh * H + rpx * 1.2) * e + f.oy;   // rises from fully below the frame
+      ax = x0 - f.bend * base * 0.1; ay = H + base * 0.05;   // the stem comes up from off-screen
+    } else {
+    const T = outlineAt(ol, f.ang);
+    if (!T) continue;
+    // glide toward the target instead of snapping to it every frame — no trembling
+    const k = 1 - Math.exp(-dt * 9);
+    if (f.px == null) { f.px = T.x; f.py = T.y; }
+    f.px += (T.x - f.px) * k; f.py += (T.y - f.py) * k;
+    P = { x: f.px, y: f.py, nx: T.nx, ny: T.ny };
+    rpx = (f.bud ? clamp(f.size * fw, base * 0.02, base * 0.05) : clamp(f.size * fw, base * 0.025, base * 0.14)) * (SET.sizeScale || 1);
+
+    // head position: tucked just behind your outline, or out on a stem
+    // distance is measured from YOU (in face-widths), never stretched across an empty frame;
+    // it only shortens if the frame edge is closer than that
+    const tx = P.nx > 0 ? (W - P.x) / P.nx : P.nx < 0 ? -P.x / P.nx : Infinity;
+    const ty = P.ny > 0 ? (H - P.y) / P.ny : P.ny < 0 ? -P.y / P.ny : Infinity;
+    const room = Math.min(tx, ty);
+    // …and never more than a modest share of the screen, so close-ups don't sprawl
+    const target = Math.min(f.out * fw, base * [0.04, 0.1, 0.16][f.ring], Math.max(0, room * 0.85));
+    f.dist = f.dist == null ? target : f.dist + (target - f.dist) * (1 - Math.exp(-dt * 4));
+    // the bloom straddles your outline (partly tucked behind you) instead of floating above it
+    const endD = f.dist - rpx * 0.35, startD = -rpx * 1.3;  // starts hidden behind you…
+    const outD = startD + (endD - startD) * e;              // …and slides straight out into place
+    const sw = Math.sin(t * 0.8 + f.sway) * fw * 0.012;
+    hx = P.x + P.nx * outD + sw + f.ox; hy = P.y + P.ny * outD + f.oy;
+    // the stem starts hidden behind you, a little inside your outline
+    ax = P.x - P.nx * fw * 0.14; ay = P.y - P.ny * fw * 0.14;
+    }
+
+    for (const h of handPts) {
+      const dx = hx - h.x, dy = hy - h.y, d2 = dx * dx + dy * dy;
+      if (d2 >= h.r * h.r) continue;
+      const d = Math.sqrt(d2) || 1, fall = 1 - d / h.r;
+      const push = base * 9 * fall * fall;
+      f.vx += (dx / d) * push * dt + h.vx * fall * 3 * dt;
+      f.vy += (dy / d) * push * dt + h.vy * fall * 3 * dt;
+      const sp = Math.hypot(f.vx, f.vy);
+      if (sp > maxV) { f.vx *= maxV / sp; f.vy *= maxV / sp; }
+    }
+
+    // where this flower's painted stem stub ends up, so the new stem joins it exactly
+    const bloom = clamp(g * 4, 0, 1);                       // just a quick fade-in; it's hidden behind you anyway
+    const list = f.bud ? SET.buds : SET.blooms, spr = list[Math.floor(f.sprite * list.length)];
+    if (!spr) continue;                                    // still loading the flower
+    const s = rpx / spr.r;                                  // full size from the start — no growing
+    // turn the flower so its stem points back at you (where it sprouts from) — so it looks like it
+    // grows out of you. If that would mean turning it too far (upside down), keep it upright and
+    // drop the green part instead: just the white bloom, floating.
+    // "toward you" = straight back in along your outline's direction at this spot (fixed), NOT from
+    // the flower's current position — that flipped around while it slid out and made it spin
+    const toYou = f.ground ? Math.PI / 2 : Math.atan2(-P.ny, -P.nx);
+    const want = Math.atan2(Math.sin(toYou - spr.stubAng), Math.cos(toYou - spr.stubAng));
+    f.rs = f.rs == null ? want : f.rs + Math.atan2(Math.sin(want - f.rs), Math.cos(want - f.rs)) * (1 - Math.exp(-dt * 3));
+    if (f.useStem == null) f.useStem = f.bud || Math.abs(f.rs) <= 1.3;   // decided once — never flips mid-way
+    const baseRot = f.useStem ? f.rs + f.tilt * 0.25 : f.tilt;
+    const a = baseRot + f.rotOff + Math.sin(t * 0.6 + f.sway) * 0.04;   // no spinning in
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const stx = hx + (ca * spr.stub.x - sa * spr.stub.y) * s, sty = hy + (sa * spr.stub.x + ca * spr.stub.y) * s;
+    items.push({ f, g, e, bloom, spr, s, a, ca, sa, hx, hy, rpx, ax, ay, stx, sty, nx: P.nx, ny: P.ny, useStem: f.useStem });
+  }
+
+  // each flower's own stem and leaves
+  const greenery = (it) => {
+    const { f, g, e, rpx, ax, ay, stx, sty, nx, ny } = it;
+
+    const L = Math.hypot(stx - ax, sty - ay);
+    const px = -ny, py = nx;
+    const c1x = (ax + stx) / 2 + px * f.bend * L, c1y = (ay + sty) / 2 + py * f.bend * L;
+    const qx = (u) => (1 - u) * (1 - u) * ax + 2 * (1 - u) * u * c1x + u * u * stx;
+    const qy = (u) => (1 - u) * (1 - u) * ay + 2 * (1 - u) * u * c1y + u * u * sty;
+    ctx.globalAlpha = Math.min(1, g * 3);
+    ctx.lineCap = "round";
+    const sw = Math.max(1.5, rpx * 0.065);
+    // stem in the painting's greens: a darker edge, the stem's own mid green, and soft light
+    // on the upper side (the same side the flower is lit from)
+    const lx0 = -0.35 * sw * 0.3, ly0 = -0.35 * sw * 0.3;
+    const stroke = (col, w, dx, dy) => { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(ax + dx, ay + dy); ctx.quadraticCurveTo(c1x + dx, c1y + dy, stx + dx, sty + dy); ctx.stroke(); };
+    stroke(rgba(G.dark, 0.85), sw, 0, 0);
+    stroke(rgba(G.stemMid, 0.95), sw * 0.7, lx0 * 0.5, ly0 * 0.5);
+    stroke(rgba(G.light, 0.55), sw * 0.28, lx0 * 1.4, ly0 * 1.4);
+    // leaves unfurl along the stem
+    for (const lf of f.leaves) {
+      const grow = clamp((e - 0.55 - lf.t * 0.2) / 0.3, 0, 1);   // only once the flower is mostly out
+      if (grow <= 0) continue;
+      const lx = qx(lf.t), ly = qy(lf.t);
+      const tx = qx(lf.t + 0.02) - qx(lf.t - 0.02), ty = qy(lf.t + 0.02) - qy(lf.t - 0.02);
+      const ang = Math.atan2(ty, tx) + lf.side * lf.spread;
+      const sp = LV[lf.v % LV.length], len = rpx * lf.sz * (SET.leafScale || 1) * easeOutCubic(grow);
+      const k2 = len / sp.len, c2 = Math.cos(ang) * k2, s2 = Math.sin(ang) * k2;
+      ctx.setTransform(c2, s2, -s2 * lf.side, c2 * lf.side, lx, ly);   // mirror leaves on the other side
+      ctx.drawImage(sp.img, -6, -sp.cy);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+    }
+    ctx.globalAlpha = 1;
+  };
+
+  // the flower itself
+  const flower = (it) => {
+    const { f, bloom, spr, s, ca, sa, hx, hy, rpx } = it;
+    if (bloom <= 0) return;
+    // depth: 0 = right against you (front), 1 = middle, 2 = further back (outer ring and the bottom row)
+    const depth = f.ground ? 1 : f.ring;
+    // cast shadow: falls down and to the side (light comes from above, like in the painting)
+    // onto whatever is behind — the flowers and leaves drawn before this one
+    ctx.globalAlpha = Math.min(1, bloom * 1.5) * [0.2, 0.16, 0.12][depth];
+    ctx.setTransform(ca * s, sa * s, -sa * s, ca * s, hx + rpx * 0.12, hy + rpx * 0.2);
+    ctx.drawImage(spr.shadow, -spr.half, -spr.half);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // soft luminous glow behind each bloom (gentler on the ones further back)
+    ctx.globalCompositeOperation = "screen";
+    const gr = ctx.createRadialGradient(hx, hy, 0, hx, hy, rpx * 1.5);
+    gr.addColorStop(0, `rgba(${GLOW},${[0.3, 0.22, 0.12][depth] * bloom})`); gr.addColorStop(1, `rgba(${GLOW},0)`);
+    ctx.globalAlpha = 1; ctx.fillStyle = gr;
+    ctx.beginPath(); ctx.arc(hx, hy, rpx * 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = Math.min(1, bloom * 1.5);
+    ctx.setTransform(ca * s, sa * s, -sa * s, ca * s, hx, hy);
+    ctx.drawImage(it.useStem ? spr.img : (spr.nostem || spr.img), -spr.half, -spr.half);   // no green when it floats
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    if (!f.bud && SET.sparkle !== false) for (const k of f.tw) twinkles.push({ x: hx + k.ox * rpx, y: hy + k.oy * rpx, r: rpx * k.r, a: bloom * Math.pow(0.5 + 0.5 * Math.sin(t * k.sp + k.ph), 3) });
+  };
+
+  // draw back to front, each flower together with its own stem and leaves — so a bud or small
+  // flower in front of a big one shows its whole stem instead of looking like it's hovering
+  for (const it of items) {
+    if (it.useStem) greenery(it);
+    flower(it);
+  }
+  // twinkles go on last so they sparkle over the petals
+  for (const k of twinkles) drawTwinkle(k.x, k.y, k.r, k.a);
+  if (SET.bees) drawBees(t, p, dt, ol, fw, base, items);   // the sunflowers' bees, out in the open air
+}
+
+function drawGlow(W, H, gx, gy, strength, radiusMul) {
+  if (strength <= 0.005) return;
+  const R = Math.max(W, H) * radiusMul;
+  const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, R);
+  // neutral soft white, so the black & white room stays black & white
+  g.addColorStop(0, `rgba(250,248,244,${0.95 * strength})`);
+  g.addColorStop(0.18, `rgba(240,238,234,${0.7 * strength})`);
+  g.addColorStop(0.5, `rgba(225,224,222,${0.25 * strength})`);
+  g.addColorStop(1, "rgba(220,220,220,0)");
+  ctx.globalCompositeOperation = "screen";
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = "source-over";
+}
+
+// ---------- main loop ----------
+let lastT = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
+  const t = now / 1000;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw) { requestAnimationFrame(loop); return; }
+
+  let sw = vw, sh = vh;
+  if (vertical) sw = Math.min(vw, vh * 9 / 16);
+  const sx = (vw - sw) / 2, sy = 0;
+  crop = { sx, sy, sw, sh, vw, vh };
+  const W = Math.round(sw), H = Math.round(sh);
+  // size every layer to the video — checked against the person layer too, because the main canvas
+  // can already match a 1280×720 camera on the first frame (that skipped this and left you invisible)
+  if (canvas.width !== W || canvas.height !== H || personCanvas.width !== W || personCanvas.height !== H) {
+    canvas.width = W; canvas.height = H; personCanvas.width = W; personCanvas.height = H;
+    glowC.width = Math.max(1, Math.round(W / 4)); glowC.height = Math.max(1, Math.round(H / 4));
+    halfC.width = Math.max(1, Math.round(W / 2)); halfC.height = Math.max(1, Math.round(H / 2));
+    bgBlurC.width = Math.max(1, Math.round(W / 2)); bgBlurC.height = Math.max(1, Math.round(H / 2));
+    bgFillC.width = bgBlurC.width; bgFillC.height = bgBlurC.height;
+    sproutsReady = false;
+  }
+
+  // run models on new frames
+  if (video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    const ts = performance.now();
+    const fr = faceLandmarker.detectForVideo(video, ts);
+    const mi = pickMainFace(fr);
+    if (mi >= 0) {
+      const cats = fr.faceBlendshapes[mi].categories;
+      const get = (n) => (cats.find((c) => c.categoryName === n) || { score: 0 }).score;
+      smileRaw = (get("mouthSmileLeft") + get("mouthSmileRight")) / 2;   // only YOUR smile counts
+      const lm = fr.faceLandmarks[mi];
+      const [fx, fy] = videoNormToScreen(lm[10].x, lm[10].y);
+      const [lx] = videoNormToScreen(lm[234].x, lm[234].y);
+      const [rx] = videoNormToScreen(lm[454].x, lm[454].y);
+      const nf = { x: fx, y: fy, w: Math.abs(rx - lx) };
+      // eyes (+brows) and lips in screen space — kept crisp, never smoothed or bloomed
+      const P = (i) => videoNormToScreen(lm[i].x, lm[i].y);
+      const eye = (a, b) => {
+        const [ax, ay] = P(a), [bx, by] = P(b), w = Math.hypot(bx - ax, by - ay);
+        return { x: (ax + bx) / 2, y: (ay + by) / 2 - w * 0.2, rx: w * 1.0, ry: w * 0.85 };
+      };
+      const [m1x, m1y] = P(61), [m2x, m2y] = P(291), mw = Math.hypot(m2x - m1x, m2y - m1y);
+      faceOval = FACE_OVAL.map((i) => [lm[i].x, lm[i].y]);
+      lipsOuter = LIPS_OUTER.map(P);
+      lipsInner = LIPS_INNER.map(P);
+      cheeks = [P(50), P(280)];
+      features = [eye(33, 133), eye(263, 362),
+        { x: (m1x + m2x) / 2, y: (m1y + m2y) / 2, rx: mw * 0.75, ry: mw * 0.45 }];
+      face = face ? { x: face.x + (nf.x - face.x) * 0.4, y: face.y + (nf.y - face.y) * 0.4, w: face.w + (nf.w - face.w) * 0.4 } : nf;
+      if (maskData) {
+        // which way round is the mask? compare several face points against the four corners,
+        // and only flip after many frames agree (one odd frame used to flip it and blur your face)
+        const raw = (nx, ny) => maskData[Math.min(maskH - 1, Math.max(0, Math.floor(ny * maskH))) * maskW + Math.min(maskW - 1, Math.max(0, Math.floor(nx * maskW)))];
+        const facePts = [1, 10, 234, 454, 152].map((i) => raw(lm[i].x, lm[i].y));
+        const faceAvg = facePts.reduce((a, b) => a + b, 0) / facePts.length;
+        const cornerAvg = (raw(0.02, 0.02) + raw(0.98, 0.02) + raw(0.02, 0.5) + raw(0.98, 0.5)) / 4;
+        const wantInvert = faceAvg < cornerAvg - 0.3 ? true : faceAvg > cornerAvg + 0.3 ? false : invertMask;
+        maskVotes = wantInvert !== invertMask ? maskVotes + 1 : 0;
+        if (maskVotes >= 8) { invertMask = wantInvert; maskVotes = 0; }
+      }
+    } else { smileRaw = 0; features = []; lipsOuter = lipsInner = null; faceOval = null; }
+    // hands: every other camera frame to keep things smooth
+    if (handLandmarker && (handShapes.length || (handFrame++ & 1) === 0)) {
+      const hr = handLandmarker.detectForVideo(video, ts + 0.02);
+      const pts = [], palms = [], shapes = [];
+      (hr.landmarks || []).forEach((lm) => {
+        const S = (i) => videoNormToScreen(lm[i].x, lm[i].y);
+        const [wx, wy] = S(0), [mx2, my2] = S(9);
+        const palmLen = Math.hypot(mx2 - wx, my2 - wy);
+        // only YOUR hands: about the right size for your face, and within reach of you —
+        // smaller, farther hands belong to people behind you
+        if (face && (palmLen < face.w * 0.28 || Math.abs((wx + mx2) / 2 - face.x) > face.w * 4.5)) return;
+        shapes.push(lm.map((q) => [q.x, q.y]));
+        const pcx = (wx + mx2) / 2, pcy = (wy + my2) / 2;
+        // swipe velocity from the nearest palm last time
+        let vx = 0, vy = 0, best = null, bd = Infinity;
+        for (const p of prevPalms) { const d = Math.hypot(p.x - pcx, p.y - pcy); if (d < bd) { bd = d; best = p; } }
+        if (best && bd < palmLen * 3) {
+          const el = Math.max(0.016, ts / 1000 - best.t);
+          vx = clamp((pcx - best.x) / el, -4000, 4000); vy = clamp((pcy - best.y) / el, -4000, 4000);
+        }
+        palms.push({ x: pcx, y: pcy, t: ts / 1000 });
+        pts.push({ x: pcx, y: pcy, r: palmLen * 1.5, vx, vy });
+        for (const tip of [4, 8, 12, 16, 20]) {
+          const [tx, ty] = S(tip);
+          pts.push({ x: tx, y: ty, r: palmLen * 0.75, vx, vy });
+        }
+      });
+      handPts = pts; prevPalms = palms; handShapes = shapes;
+    }
+    // the cut-out is built after the hands, so your hand shape in it is from this same frame
+    segmenter.segmentForVideo(video, ts + 0.01, onSegment);
+  }
+
+  // smile state (smoothed, with a short hold so it doesn't flicker)
+  smile += ((forceSmile ? 1 : smileRaw) - smile) * Math.min(1, dt * 12);
+  const thr = parseFloat(sens.value);
+  if (smile > thr) { smiling = true; lastSmileTime = t; }
+  else if (t - lastSmileTime > 0.6) smiling = false;
+  meterFill.style.width = clamp(smile * 100, 0, 100) + "%";
+  meterMark.style.left = thr * 100 + "%";
+
+  // bloom spreads out over ~1.5s, retracts a bit faster
+  prog = clamp(prog + (smiling ? dt / 1.5 : -dt / 1.0), 0, 1);
+  const glowAmt = easeOutCubic(clamp(prog * 1.6, 0, 1));
+
+  // burst origin: just behind your head/neck
+  const cx = face ? face.x : W / 2;
+  const cy = face ? face.y + face.w * 0.9 : H * 0.45;
+  const gx = cx, gy = face ? face.y - face.w * 0.15 : H * 0.25;
+
+  // ---- draw ----
+  // 1. camera background — it softly blurs as the flowers come in (like portrait mode).
+  // You and the flowers are drawn on top afterwards, so you both stay sharp.
+  ctx.setTransform(-1, 0, 0, 1, W, 0);
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, W, H);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (glowAmt > 0.01 && haveMask) {
+    // Portrait-mode style: (1) the room with you taken out, (2) that gap filled in with the
+    // surrounding room colours so nothing dark smears out from behind you, (3) one smooth, subtle
+    // blur at full strength — no half-blend, so no ghosting — and (4) you drawn sharp on top later.
+    const bw = bgBlurC.width, bh = bgBlurC.height;
+    const mx0 = sx * maskW / vw, msw0 = sw * maskW / vw;
+    bbctx.globalCompositeOperation = "source-over";
+    bbctx.clearRect(0, 0, bw, bh);
+    bbctx.setTransform(-1, 0, 0, 1, bw, 0);
+    bbctx.drawImage(video, sx, sy, sw, sh, 0, 0, bw, bh);
+    bbctx.globalCompositeOperation = "destination-out";
+    bbctx.drawImage(maskCanvas, mx0, 0, msw0, maskH, 0, 0, bw, bh);   // exactly your shape — no margin to peek out
+    bbctx.globalCompositeOperation = "source-over";
+    bbctx.setTransform(1, 0, 0, 1, 0, 0);
+    // fill the gap with the colours right next to it: smear the room inward from every direction,
+    // nearest first (no wide averaging, so no grey/dark tint creeps in around your edges)
+    bfctx.globalCompositeOperation = "source-over";
+    bfctx.clearRect(0, 0, bw, bh);
+    bfctx.drawImage(bgBlurC, 0, 0);
+    bfctx.globalCompositeOperation = "destination-over";      // only fills what's still empty
+    for (let r = 1; r <= Math.max(bw, bh); r *= 2) {
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [0.7, 0.7], [-0.7, 0.7], [0.7, -0.7], [-0.7, -0.7]]) {
+        bfctx.drawImage(bgBlurC, dx * r, dy * r);
+      }
+    }
+    bfctx.globalCompositeOperation = "source-over";
+    // a subtle, even, lens-like soft focus at full strength (fades in only while the flowers appear)
+    ctx.globalAlpha = glowAmt;
+    ctx.filter = `blur(${Math.max(1.2, W * 0.0026)}px)`;   // just a hint of soft focus
+    ctx.drawImage(bgFillC, -W * 0.01, -H * 0.01, W * 1.02, H * 1.02);   // slightly oversized: clean frame edges
+    ctx.filter = "none";
+    ctx.globalAlpha = 1;
+  }
+
+  // 2. wall of flowers + soft light (behind you)
+  // the mouse / a finger on screen also pushes flowers, like a hand
+  const allPts = pointer && now - pointer.t < 150
+    ? handPts.concat([{ x: pointer.x, y: pointer.y, r: Math.min(W, H) * 0.09, vx: pointer.vx, vy: pointer.vy }])
+    : handPts;
+  // the aura goes on BEFORE the flowers, so it glows from behind you and the flowers stay crisp
+  // on top of it (drawn after them, it washed a white haze over every flower near your outline)
+  if (haveMask) {
+    const mx = sx * maskW / vw, msw = sw * maskW / vw;
+    const gw = glowC.width, gh = glowC.height;
+    // ethereal moonlight aura that hugs your head, hair and shoulders
+    if (glowAmt > 0.01) {
+      const halo = (blurPx, stops, alpha) => {
+        gctx.globalCompositeOperation = "source-over";
+        gctx.clearRect(0, 0, gw, gh);
+        gctx.filter = `blur(${blurPx}px)`;
+        gctx.setTransform(-1, 0, 0, 1, gw, 0);
+        gctx.drawImage(maskCanvas, mx, 0, msw, maskH, 0, 0, gw, gh);
+        gctx.setTransform(1, 0, 0, 1, 0, 0);
+        gctx.filter = "none";
+        gctx.globalCompositeOperation = "source-in";
+        const hg = gctx.createLinearGradient(0, 0, 0, gh);
+        stops.forEach(([o, c]) => hg.addColorStop(o, c));
+        gctx.fillStyle = hg; gctx.fillRect(0, 0, gw, gh);
+        cutHands(gctx, gw / W);                              // the aura is for your head and shoulders, not your hands
+        ctx.globalCompositeOperation = "screen";
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(glowC, 0, 0, W, H);
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = "source-over";
+      };
+      // wide, soft golden aura: warm ivory at the head → pale buttery gold → fades out lower down
+      halo(Math.max(5, gw * 0.05), [
+        [0, "rgba(255,247,218,1)"],
+        [0.4, "rgba(255,234,168,0.75)"],
+        [1, "rgba(255,240,196,0.2)"],
+      ], glowAmt * 0.7);
+      // thin, bright champagne rim light right along your edge
+      halo(Math.max(1.5, gw * 0.012), [
+        [0, "rgba(255,253,238,1)"],
+        [0.6, "rgba(255,245,208,0.7)"],
+        [1, "rgba(255,240,200,0.25)"],
+      ], glowAmt * 0.6);
+    }
+  }
+  const savedPts = handPts; handPts = allPts;
+  drawSprouts(t, prog, dt);
+  handPts = savedPts;
+  drawGlow(W, H, gx, gy, glowAmt * 0.25, 0.4); // soft light behind you
+
+  // 3. you, cut out and placed on top — you fade into color evenly, all at once
+  const personColor = 1; // always in full color
+  if (haveMask) {
+    const mx = sx * maskW / vw, msw = sw * maskW / vw;
+    const gw = glowC.width, gh = glowC.height;
+
+    pctx.globalCompositeOperation = "source-over";
+    pctx.clearRect(0, 0, W, H);
+    pctx.setTransform(-1, 0, 0, 1, W, 0);
+    pctx.drawImage(video, sx, sy, sw, sh, 0, 0, W, H);
+    pctx.globalCompositeOperation = "destination-in";
+    pctx.filter = "blur(2px)";
+    pctx.drawImage(maskCanvas, mx, 0, msw, maskH, 0, 0, W, H);
+    pctx.filter = "none";
+    pctx.setTransform(1, 0, 0, 1, 0, 0);
+    const pc = personColor;
+    // soft, flattering key light: a gentle warm-pink wash centered on your face
+    if (face && pc > 0.01) {
+      const fcy = face.y + face.w * 0.55, fr = face.w * 1.1;
+      const fg = pctx.createRadialGradient(face.x, fcy, 0, face.x, fcy, fr);
+      fg.addColorStop(0, `rgba(255,214,206,${0.12 * pc})`);
+      fg.addColorStop(0.7, `rgba(255,214,206,${0.05 * pc})`);
+      fg.addColorStop(1, "rgba(255,214,206,0)");
+      pctx.globalCompositeOperation = "source-atop";
+      pctx.fillStyle = fg; pctx.fillRect(0, 0, W, H);
+      pctx.globalCompositeOperation = "source-over";
+    }
+    tintLips(pctx, pc, t);
+    // the sharp you, slightly brighter and creamier
+    ctx.filter = "brightness(1.05) saturate(1.08)";
+    ctx.drawImage(personCanvas, 0, 0);
+    ctx.filter = "none";
+
+    if (pc > 0.01) {
+      // gentle skin smoothing: a lightly softened copy at low opacity (eyes/hair stay crisp)
+      hctx.clearRect(0, 0, halfC.width, halfC.height);
+      hctx.filter = "blur(1.5px)";
+      hctx.drawImage(personCanvas, 0, 0, halfC.width, halfC.height);
+      hctx.filter = "none";
+      protectFeatures(hctx, halfC.width / W);
+      keepFaceOnly(hctx, halfC.width / W);                  // face only — never your hands
+      ctx.globalAlpha = 0.2 * pc;
+      ctx.drawImage(halfC, 0, 0, W, H);
+
+      // "pro-mist" highlight bloom: only the bright parts (cheeks, nose, forehead) glow
+      gctx.globalCompositeOperation = "source-over";
+      gctx.clearRect(0, 0, gw, gh);
+      gctx.filter = "blur(4px) brightness(0.75) contrast(3.2)";
+      gctx.drawImage(personCanvas, 0, 0, gw, gh);
+      gctx.filter = "none";
+      protectFeatures(gctx, gw / W);
+      keepFaceOnly(gctx, gw / W);                           // face only — no white blotches on your hands
+      ctx.globalCompositeOperation = "screen";
+      ctx.globalAlpha = 0.24 * pc;
+      ctx.drawImage(glowC, 0, 0, W, H);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "source-over";
+    }
+  }
+
+  // 4. light spill over you, warm haze (fades in with your color so B&W stays clean)
+  if (glowAmt * personColor > 0.01) {
+    ctx.globalCompositeOperation = "screen";
+    ctx.fillStyle = `rgba(235,235,235,${0.03 * glowAmt * personColor})`;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  if (showDebug) {
+    ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(8, 8, 240, 66);
+    ctx.fillStyle = "#fff"; ctx.font = "14px monospace";
+    ctx.fillText(`smile ${smile.toFixed(2)} thr ${thr.toFixed(2)}`, 16, 28);
+    ctx.fillText(`bloom ${prog.toFixed(2)} flowers ${sprouts.length}`, 16, 46);
+    ctx.fillText(`mask ${maskW}x${maskH} inv ${invertMask}`, 16, 64);
+    if (lipTone) { ctx.fillStyle = `rgb(${lipTone.map(Math.round).join(",")})`; ctx.fillRect(252, 8, 40, 66); }
+    ctx.strokeStyle = "#0f0"; ctx.lineWidth = 2;
+    for (const f of features) { ctx.beginPath(); ctx.ellipse(f.x, f.y, f.rx * 0.65, f.ry * 0.65, 0, 0, Math.PI * 2); ctx.stroke(); }
+    ctx.strokeStyle = "#0ff";
+    for (const h of handPts) { ctx.beginPath(); ctx.arc(h.x, h.y, h.r, 0, Math.PI * 2); ctx.stroke(); }
+    ctx.fillStyle = "#fff"; ctx.fillText(`hands ${handLandmarker ? "on" : "off"} pts ${handPts.length}`, 16, 82);
+  }
+  requestAnimationFrame(loop);
+}
+
+// ---------- controls ----------
+function toggleVertical() { vertical = !vertical; $("vert").classList.toggle("on", vertical); }
+$("vert").onclick = toggleVertical;
+
+let recorder = null, chunks = [];
+function toggleRecord() {
+  const btn = $("rec");
+  if (recorder) { recorder.stop(); return; }
+  const types = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm"];
+  const mimeType = types.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
+  const stream = canvas.captureStream(30);
+  recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 10_000_000 });
+  chunks = [];
+  recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  recorder.onstop = () => {
+    const type = recorder.mimeType || "video/webm";
+    const blob = new Blob(chunks, { type });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `smile-bloom-${Date.now()}.${type.includes("mp4") ? "mp4" : "webm"}`;
+    a.click();
+    recorder = null;
+    btn.classList.remove("on"); btn.innerHTML = "⏺ Record";
+  };
+  recorder.start(250);
+  btn.classList.add("on"); btn.innerHTML = '<span class="rec-dot"></span>Stop';
+}
+$("rec").onclick = toggleRecord;
+
+addEventListener("keydown", (e) => {
+  const k = e.key.toLowerCase();
+  if (k === "v") toggleVertical();
+  if (k === "r") toggleRecord();
+  if (k === "d") showDebug = !showDebug;
+  if (k === "i") invertMask = !invertMask;
+  if (k === "f") { const ks = Object.keys(SETS).filter((x) => SETS[x].ready); chooseFlower(ks[(ks.indexOf(flowerKind) + 1) % ks.length]); }
+  if (k === "t") forceSmile = !forceSmile; // preview the effect without smiling
+});
+</script>
+</body>
+</html>
