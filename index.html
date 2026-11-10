@@ -8,8 +8,7 @@
   :root { --pink:#ff7eb6; --ink:#fff; --panel:rgba(20,10,20,.55); }
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; color:var(--ink);
-    /* one copy of the photo, top to bottom (mist above, dark grass below), stretched to fill the width */
-    background:#8fa874 url("grass.jpg") center / 100% 100% no-repeat;
+    background:#8fb35a url("hills.jpg") center / cover no-repeat;
     font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif; overflow:hidden; }
   #stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
   canvas { max-width:100vw; max-height:100vh; border-radius:14px; }
@@ -88,7 +87,7 @@
   const fs = `#version 300 es
     precision highp float;
     in vec2 uv; out vec4 o;
-    uniform sampler2D tex; uniform float t;
+    uniform sampler2D tex; uniform float t; uniform vec2 cover;
     // smooth value noise + a few octaves of it: irregular, never-repeating gusts instead of even waves
     float h(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
     float n(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3. - 2. * f);
@@ -96,28 +95,31 @@
     float fbm(vec2 p) { return n(p) * .55 + n(p * 2.1 + 7.3) * .3 + n(p * 4.3 + 3.1) * .15; }
 
     void main() {
-      float x = uv.x, y = uv.y;                        // y: 0 = top of the photo (far, tips), 1 = bottom (near, roots)
-      // Like a real blade, each column of grass bends from the root: it hardly moves at the bottom
-      // and swings more the higher up it goes, on a smooth curve. Nothing moves up or down, and the
-      // wave only changes slowly from side to side, so the blades bend instead of wobbling like jelly.
-      float bend = pow(smoothstep(1.05, .0, y), 1.5);
+      // fit the photo like CSS "cover": fill the screen, keep its shape, crop the overflow
+      vec2 q = (uv - .5) * cover + .5;
+      float x = q.x, y = q.y;
 
-      // How hard the wind blows here and now: slow, uneven gusts drifting across from the left.
-      float gust = smoothstep(.25, .8, fbm(vec2(x * .9 - t * .16, t * .05)));
-      // The sway: two slow waves rolling across the field at different speeds (periods of about
-      // 6 and 4 seconds), so the motion never settles into an obvious repeating rhythm.
-      float wave = sin(x * 2.2 - t * 1.05) * .6 + sin(x * 3.6 - t * 1.6 + 1.3) * .4;
-      // The grass rocks back and forth around a slight lean, swinging further in a gust.
-      float sway = (.3 + wave) * (.35 + .65 * gust);
+      // Where the grass is. Worked out from a blurred copy of the photo so the edge is soft and
+      // steady: the sky (blue/white) never moves, the hills never move, only the grass on them does.
+      vec3 blur = textureLod(tex, q, 4.5).rgb;
+      float grass = smoothstep(.0, .07, blur.g - blur.b) * smoothstep(.02, .1, blur.g - blur.r * .9);
 
-      float dx = sway * .022 * bend;
-      vec3 c = texture(tex, clamp(vec2(x - dx, y), 0., 1.)).rgb;   // one photo across the screen, no repeats
+      // Gusts: soft, uneven patches of wind drifting across the meadow from the left. They reach
+      // the far hills (higher up) a beat after the near grass.
+      float gust = smoothstep(.3, .85, fbm(vec2(x * 1.6 - t * .2 + (1. - y) * .6, y * 2.4)));
+      // Inside a gust the grass ripples: slow, small waves rolling the same way as the wind.
+      float ripple = sin(x * 26. - t * 2.1 + y * 9. + fbm(vec2(x * 3., y * 5.)) * 4.) * .6
+                   + sin(x * 41. - t * 3.0 + y * 15.) * .4;
+      float near = .4 + .6 * y;                         // near grass (bottom) moves more than far grass
+      float dx = ripple * (.25 + .75 * gust) * .0016 * near * grass;
+      vec3 c = texture(tex, clamp(vec2(x - dx, y), 0., 1.)).rgb;
 
-      // Grass pushed over by the wind shows its paler side: a faint lighter band rides each swing.
-      float sheen = smoothstep(.2, 1.1, wave) * gust * bend;
+      // Grass flattened by the wind shows its paler, silvery side, so each gust rolls across the
+      // meadow as a soft band of lighter green - the main thing you see when wind crosses a field.
+      float sheen = gust * grass * (.75 + .25 * ripple);
       float l = dot(c, vec3(.299, .587, .114));
-      c = mix(c, vec3(l) * vec3(1.02, 1.06, 1.0), sheen * .16);
-      o = vec4(c * (1. + sheen * .10) + sheen * .02, 1.);
+      c = mix(c, vec3(l) * vec3(1.03, 1.07, .98), sheen * .2);
+      o = vec4(c * (1. + sheen * .1) + sheen * .02, 1.);
     }`;
   const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
@@ -133,15 +135,16 @@
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
   const loc = gl.getAttribLocation(prog, "p");
   gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  const uT = gl.getUniformLocation(prog, "t");
+  const uT = gl.getUniformLocation(prog, "t"), uCover = gl.getUniformLocation(prog, "cover");
 
   const img = new Image();
-  img.src = "grass.jpg";
+  img.src = "hills.jpg";
   cv.style.opacity = 0;
   img.decode().then(() => {
     gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.generateMipmap(gl.TEXTURE_2D);   // blurred levels, used to find the grass softly
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -149,6 +152,8 @@
       const r = Math.min(devicePixelRatio || 1, 1.5);   // keep it light: the face tracking needs the GPU too
       cv.width = Math.round(innerWidth * r); cv.height = Math.round(innerHeight * r);
       gl.viewport(0, 0, cv.width, cv.height);
+      const sa = innerWidth / innerHeight, ia = img.width / img.height;
+      gl.uniform2f(uCover, sa > ia ? 1 : sa / ia, sa > ia ? ia / sa : 1);
     };
     resize(); addEventListener("resize", resize);
     let last = 0;
