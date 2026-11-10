@@ -10,6 +10,9 @@ Smile at your webcam and flowers bloom behind you, with a soft portrait blur and
 2. Click **Start camera** and allow camera access.
 3. Smile.
 4. Tap a sticker at the top right to change the flower.
+5. Use the buttons at the bottom of the video to take a photo or record a video. The timer button on the left adds a 3 or 10 second countdown first.
+
+At the top left you can switch between wide and vertical video, watch your smile meter, and set how big a smile it takes.
 
 The first load can take a few seconds while the face-tracking models download.
 
@@ -32,6 +35,9 @@ The first load can take a few seconds while the face-tracking models download.
 | `T` | Preview the flowers without smiling |
 | `V` | Switch to vertical video |
 | `R` | Start or stop recording |
+| `P` | Take a photo |
+| `C` | Timer: off, 3 or 10 seconds |
+| `?` | Show the shortcuts in the app |
 | `D` | Show debug view |
 | `I` | Invert the person mask |
 

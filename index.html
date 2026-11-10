@@ -23,19 +23,49 @@
     box-shadow:0 8px 30px rgba(255,111,165,.45); }
   #status { position:absolute; top:16px; left:50%; transform:translateX(-50%); background:var(--panel);
     padding:8px 16px; border-radius:999px; font-size:14px; backdrop-filter:blur(8px); }
-  #hud { position:absolute; bottom:16px; left:50%; transform:translateX(-50%); display:none;
-    align-items:center; gap:10px; background:var(--panel); padding:10px 14px; border-radius:999px;
-    backdrop-filter:blur(8px); flex-wrap:wrap; justify-content:center; max-width:calc(100vw - 32px); }
-  #meter { width:120px; height:10px; border-radius:99px; background:rgba(255,255,255,.18); overflow:hidden; position:relative; }
-  #meterFill { height:100%; width:0; background:linear-gradient(90deg,#ffd36e,#ff7eb6); transition:width .08s; }
-  #meterMark { position:absolute; top:-3px; bottom:-3px; width:2px; background:#fff; }
-  #hud button { border:0; border-radius:999px; padding:7px 12px; background:rgba(255,255,255,.14);
-    color:#fff; cursor:pointer; font-size:13px; }
-  #hud button.on { background:var(--pink); }
-  #hud label { font-size:12px; display:flex; align-items:center; gap:6px; opacity:.85; }
-  #hud input[type=range] { width:80px; accent-color:var(--pink); }
-  .rec-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#ff3b5c; margin-right:6px; animation:blink 1s infinite; }
-  @keyframes blink { 50% { opacity:.2; } }
+  /* smile meter + sensitivity: two vertical bars, top left under the frame-shape button */
+  #hud { position:absolute; left:16px; top:76px; display:none; z-index:6; gap:14px; padding:12px 12px 14px;
+    background:var(--panel); border-radius:24px; backdrop-filter:blur(8px); border:1px solid rgba(255,255,255,.14); }
+  #hud .col { display:flex; flex-direction:column; align-items:center; gap:10px; }
+  #hud .ico { font-size:17px; line-height:20px; height:20px; display:grid; place-items:center; }
+  #hud .ico svg { width:18px; height:18px; fill:none; stroke:#fff; stroke-width:2; stroke-linecap:round; opacity:.9; }
+  #meter { width:10px; height:130px; border-radius:99px; background:rgba(255,255,255,.18); overflow:hidden; position:relative; }
+  #meterFill { position:absolute; left:0; right:0; bottom:0; height:0; background:linear-gradient(0deg,#ffd36e,#ff7eb6); transition:height .08s; }
+  #meterMark { position:absolute; left:-3px; right:-3px; height:2px; background:#fff; margin-bottom:-1px; }
+  #sens { writing-mode:vertical-lr; direction:rtl; width:16px; height:130px; margin:0; accent-color:var(--pink); cursor:pointer; }
+
+  /* capture bar: bottom centre inside the video frame (placed by placeHud) */
+  #shoot { position:absolute; bottom:16px; left:50%; transform:translateX(-50%); display:none; z-index:6;
+    align-items:center; gap:18px; padding:8px 14px; background:var(--panel); border-radius:999px;
+    backdrop-filter:blur(8px); border:1px solid rgba(255,255,255,.14); }
+  body.live #shoot { display:flex; }
+  #shoot button { border:0; padding:0; cursor:pointer; color:#fff; display:grid; place-items:center; position:relative; }
+  #shoot .small { width:42px; height:42px; border-radius:50%; background:rgba(255,255,255,.14); transition:background .15s; }
+  #shoot .small:hover { background:rgba(255,255,255,.24); }
+  #shoot .small svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+  #timerBtn.on { background:var(--pink); }
+  #timerBtn .badge { position:absolute; right:-4px; top:-4px; min-width:18px; height:18px; padding:0 4px; border-radius:9px;
+    background:#fff; color:#3a2a1a; font-size:10.5px; font-weight:800; line-height:18px; display:none; }
+  #timerBtn.on .badge { display:block; }
+  /* record: the big button in the middle. A red dot that turns into a rounded square while recording */
+  #rec { width:58px; height:58px; border-radius:50%; background:none; box-shadow:inset 0 0 0 4px #fff; }
+  #rec i { width:42px; height:42px; border-radius:50%; background:#ff3b5c; transition:all .2s; }
+  #rec.on i { width:22px; height:22px; border-radius:6px; }
+  #rec.armed i { animation:blink 1s infinite; }
+  #recTime { position:absolute; left:50%; bottom:calc(100% + 8px); transform:translateX(-50%); display:none;
+    background:#ff3b5c; color:#fff; font-size:12px; font-weight:700; padding:3px 10px; border-radius:99px;
+    font-variant-numeric:tabular-nums; white-space:nowrap; }
+  #recTime.show { display:block; }
+  @keyframes blink { 50% { opacity:.25; } }
+  /* timer countdown and photo flash, laid over the video frame */
+  #count { position:absolute; display:none; place-items:center; pointer-events:none; z-index:7;
+    font-size:min(28vh, 220px); font-weight:800; color:#fff; text-shadow:0 6px 40px rgba(0,0,0,.45); }
+  #count.show { display:grid; }
+  #count span { animation:pop 1s ease-out both; }
+  @keyframes pop { 0% { transform:scale(1.5); opacity:0; } 20% { transform:scale(1); opacity:1; } 80% { opacity:1; } 100% { opacity:.2; transform:scale(.9); } }
+  #flash { position:absolute; background:#fff; opacity:0; pointer-events:none; z-index:7; border-radius:14px; }
+  #flash.go { animation:flash .45s ease-out; }
+  @keyframes flash { 0% { opacity:.85; } 100% { opacity:0; } }
   /* flower picker: die-cut stickers of each flower, top right */
   #stickers { position:absolute; top:16px; right:16px; display:flex; flex-direction:column; gap:6px; align-items:center; z-index:5; }
   .sticker { position:relative; width:62px; height:62px; border:0; padding:0; background:none; cursor:pointer;
@@ -203,6 +233,8 @@
       <dt><kbd>T</kbd></dt><dd>Preview the flowers without smiling</dd>
       <dt><kbd>V</kbd></dt><dd>Switch to vertical video</dd>
       <dt><kbd>R</kbd></dt><dd>Start or stop recording</dd>
+      <dt><kbd>P</kbd></dt><dd>Take a photo</dd>
+      <dt><kbd>C</kbd></dt><dd>Timer: off, 3 or 10 seconds</dd>
       <dt><kbd>D</kbd></dt><dd>Show debug view</dd>
       <dt><kbd>I</kbd></dt><dd>Invert the person mask</dd>
       <dt><kbd>?</kbd></dt><dd>Show or hide this list</dd>
@@ -210,11 +242,27 @@
     <p class="tip">You can also tap a sticker at the top right to change the flower.</p>
   </div>
   <div id="hud">
-    <span>😊</span>
-    <div id="meter"><div id="meterFill"></div><div id="meterMark"></div></div>
-    <label>Sensitivity <input id="sens" type="range" min="0.15" max="0.8" step="0.01" value="0.45" /></label>
-    <button id="rec" title="Record video (R)">⏺ Record</button>
+    <div class="col" title="Your smile. Flowers bloom when it passes the white line">
+      <span class="ico" aria-hidden="true">😊</span>
+      <div id="meter"><div id="meterFill"></div><div id="meterMark"></div></div>
+    </div>
+    <label class="col" title="Sensitivity: higher means a smaller smile is enough">
+      <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></span>
+      <input id="sens" type="range" min="0.15" max="0.8" step="0.01" value="0.45" aria-label="Sensitivity" />
+    </label>
   </div>
+  <div id="shoot">
+    <button id="timerBtn" class="small" title="Timer: off (C)" aria-label="Timer off">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="13.5" r="7.5"/><path d="M12 9.5v4l2.5 2M10 2.5h4M18.5 6.5l1.5-1.5"/></svg>
+      <span class="badge"></span>
+    </button>
+    <button id="rec" title="Record video (R)" aria-label="Record video"><i></i><span id="recTime">0:00</span></button>
+    <button id="photoBtn" class="small" title="Take a photo (P)" aria-label="Take a photo">
+      <svg viewBox="0 0 24 24"><path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.8l1.4-2h4.6l1.4 2h1.8A2.5 2.5 0 0 1 20 8.5v8a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/><circle cx="12" cy="12.5" r="3.5"/></svg>
+    </button>
+  </div>
+  <div id="count" aria-live="assertive"></div>
+  <div id="flash"></div>
 </div>
 <video id="v" playsinline muted></video>
 
@@ -1850,8 +1898,8 @@ function loop(now) {
   const thr = parseFloat(sens.value);
   if (smile > thr) { smiling = true; lastSmileTime = t; }
   else if (t - lastSmileTime > 0.6) smiling = false;
-  meterFill.style.width = clamp(smile * 100, 0, 100) + "%";
-  meterMark.style.left = thr * 100 + "%";
+  meterFill.style.height = clamp(smile * 100, 0, 100) + "%";
+  meterMark.style.bottom = thr * 100 + "%";
 
   // bloom spreads out over ~1.5s, retracts a bit faster
   prog = clamp(prog + (smiling ? dt / 1.5 : -dt / 1.0), 0, 1);
@@ -2042,9 +2090,11 @@ function loop(now) {
 function placeHud() {
   const r = canvas.getBoundingClientRect();
   if (!r.width) return;
-  hud.style.left = r.left + r.width / 2 + "px";
-  hud.style.bottom = Math.max(16, innerHeight - r.bottom + 16) + "px";
-  hud.style.maxWidth = Math.max(220, r.width - 32) + "px";
+  const bar = $("shoot");
+  bar.style.left = r.left + r.width / 2 + "px";
+  bar.style.bottom = Math.max(16, innerHeight - r.bottom + 16) + "px";
+  for (const el of [$("count"), $("flash")])   // countdown and flash cover exactly the video
+    Object.assign(el.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
 }
 new ResizeObserver(placeHud).observe(canvas);
 addEventListener("resize", placeHud);
@@ -2059,10 +2109,50 @@ function toggleVertical() {
 }
 $("vert").onclick = toggleVertical;
 
-let recorder = null, chunks = [];
-function toggleRecord() {
-  const btn = $("rec");
-  if (recorder) { recorder.stop(); return; }
+function saveBlob(blob, ext) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `smile-bloom-${Date.now()}.${ext}`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+// Timer: off -> 3 s -> 10 s. When it's on, Photo and Record count down over the video first.
+const TIMERS = [0, 3, 10];
+let timerSecs = 0, countdown = null;
+function cycleTimer() {
+  timerSecs = TIMERS[(TIMERS.indexOf(timerSecs) + 1) % TIMERS.length];
+  const b = $("timerBtn"), label = timerSecs ? `Timer: ${timerSecs} seconds` : "Timer: off";
+  b.classList.toggle("on", timerSecs > 0);
+  b.querySelector(".badge").textContent = timerSecs ? timerSecs + "s" : "";
+  b.title = label + " (C)"; b.setAttribute("aria-label", label);
+}
+function cancelCountdown() {
+  clearInterval(countdown); countdown = null;
+  $("count").classList.remove("show"); $("rec").classList.remove("armed");
+}
+function showCount(n) { $("count").innerHTML = `<span>${n}</span>`; $("count").classList.add("show"); }
+function withTimer(action) {
+  if (countdown) { cancelCountdown(); return; }      // pressing again during the countdown cancels it
+  if (!timerSecs) { action(); return; }
+  let n = timerSecs;
+  placeHud(); showCount(n);
+  countdown = setInterval(() => {
+    n--;
+    if (n > 0) { showCount(n); return; }
+    cancelCountdown(); action();
+  }, 1000);
+}
+
+function takePhoto() {
+  canvas.toBlob((b) => b && saveBlob(b, "png"), "image/png");
+  const f = $("flash"); placeHud();
+  f.classList.remove("go"); void f.offsetWidth; f.classList.add("go");
+}
+
+let recorder = null, chunks = [], recClock = null;
+function startRecording() {
+  const btn = $("rec"), timeEl = $("recTime");
   const types = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm"];
   const mimeType = types.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
   const stream = canvas.captureStream(30);
@@ -2071,18 +2161,29 @@ function toggleRecord() {
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   recorder.onstop = () => {
     const type = recorder.mimeType || "video/webm";
-    const blob = new Blob(chunks, { type });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `smile-bloom-${Date.now()}.${type.includes("mp4") ? "mp4" : "webm"}`;
-    a.click();
+    saveBlob(new Blob(chunks, { type }), type.includes("mp4") ? "mp4" : "webm");
     recorder = null;
-    btn.classList.remove("on"); btn.innerHTML = "⏺ Record";
+    clearInterval(recClock);
+    btn.classList.remove("on"); timeEl.classList.remove("show");
+    btn.title = "Record video (R)"; btn.setAttribute("aria-label", "Record video");
   };
   recorder.start(250);
-  btn.classList.add("on"); btn.innerHTML = '<span class="rec-dot"></span>Stop';
+  const t0 = performance.now();
+  const tick = () => { const s = Math.floor((performance.now() - t0) / 1000);
+    timeEl.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+  tick(); recClock = setInterval(tick, 500);
+  btn.classList.add("on"); timeEl.classList.add("show");
+  btn.title = "Stop recording (R)"; btn.setAttribute("aria-label", "Stop recording");
 }
+function toggleRecord() {
+  if (recorder) { recorder.stop(); return; }           // stopping never waits for the timer
+  if (timerSecs && !countdown) $("rec").classList.add("armed");
+  withTimer(startRecording);
+}
+const photo = () => withTimer(takePhoto);
 $("rec").onclick = toggleRecord;
+$("photoBtn").onclick = photo;
+$("timerBtn").onclick = cycleTimer;
 
 function toggleHelp(open = !$("help").classList.contains("open")) {
   $("help").classList.toggle("open", open);
@@ -2099,6 +2200,8 @@ addEventListener("keydown", (e) => {
   if (k === "escape") toggleHelp(false);
   if (k === "v") toggleVertical();
   if (k === "r") toggleRecord();
+  if (k === "p") photo();
+  if (k === "c") cycleTimer();
   if (k === "d") showDebug = !showDebug;
   if (k === "i") invertMask = !invertMask;
   if (k === "f") { const ks = Object.keys(SETS).filter((x) => SETS[x].ready); chooseFlower(ks[(ks.indexOf(flowerKind) + 1) % ks.length]); }
