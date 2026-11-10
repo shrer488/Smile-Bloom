@@ -87,20 +87,38 @@
     precision highp float;
     in vec2 uv; out vec4 o;
     uniform sampler2D tex; uniform float t, tileW;   // tileW: one tile's width as a fraction of the screen width
+    // smooth value noise + a few octaves of it: irregular, never-repeating gusts instead of even waves
+    float h(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float n(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3. - 2. * f);
+      return mix(mix(h(i), h(i + vec2(1, 0)), f.x), mix(h(i + vec2(0, 1)), h(i + 1.), f.x), f.y); }
+    float fbm(vec2 p) { return n(p) * .55 + n(p * 2.1 + 7.3) * .3 + n(p * 4.3 + 3.1) * .15; }
+
     void main() {
-      float y = uv.y;                                  // 0 = top of the photo, 1 = bottom
-      float bend = pow(smoothstep(1.02, .15, y), 1.4); // tips sway, roots stay put
-      float x = uv.x;
-      // gusts travel left to right; two slow waves plus a quicker flutter
-      float g = sin(x * 5.0 - t * 1.25 + y * 1.6) * .55
-              + sin(x * 2.3 - t * .72 + 1.7) * .35
-              + sin(x * 13. - t * 2.6 + y * 4.0) * .10;
-      vec2 d = vec2(g * .0115 * bend, -abs(g) * .004 * bend);
-      vec2 s = vec2((x + d.x) / tileW, y + d.y);
+      float x = uv.x, y = uv.y;                        // y: 0 = top of the photo (far, tips), 1 = bottom (near, roots)
+      float bend = pow(smoothstep(1.03, .1, y), 1.6);  // how free the grass is to move: roots stay planted
+
+      // Gusts: big soft patches of stronger wind blowing across the field from the left. They
+      // drift slowly, swell and fade, and reach the far grass (top) a moment after the near grass.
+      vec2 gp = vec2(x * 1.3 - t * .23, y * 1.1 + t * .045);
+      float gust = smoothstep(.3, .85, fbm(gp + vec2(y * .35, 0.)));
+
+      // The grass leans with the wind: a steady lean, pushed further inside a gust, and springing
+      // back a little as the gust passes (the quicker, smaller swing) - never an even back-and-forth.
+      float lean = .25 + .95 * gust;
+      float spring = sin(t * 1.9 + x * 6. + gust * 5.) * .22 * gust;
+      // Fine flutter: individual tufts shivering, faster and much smaller.
+      float flutter = (n(vec2(x * 38., y * 22.) + vec2(-t * 2.2, t * .6)) - .5) * .5;
+
+      float dx = (lean + spring) * .016 * bend * bend + flutter * .0022 * bend;
+      float dy = -lean * .0035 * bend * bend;           // bent blades also dip a touch
+      vec2 s = vec2((x - dx) / tileW, y - dy);
       vec3 c = texture(tex, vec2(fract(s.x), clamp(s.y, 0., 1.))).rgb;
-      // light catching the bent blades as a gust rolls through
-      float sheen = smoothstep(.35, 1., sin(x * 3.1 - t * 1.25 + y * 1.2)) * bend;
-      o = vec4(c * (1. + sheen * .07) + sheen * .025, 1.);
+
+      // Grass bent by a gust shows its paler, silvery side: a soft lighter band rides each gust.
+      float sheen = gust * bend;
+      float l = dot(c, vec3(.299, .587, .114));
+      c = mix(c, vec3(l) * vec3(1.02, 1.06, 1.0), sheen * .16);
+      o = vec4(c * (1. + sheen * .10) + sheen * .02, 1.);
     }`;
   const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
