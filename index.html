@@ -26,9 +26,10 @@
   /* smile meter, top left under the frame-shape button. The white line is how big a smile it
      takes to bloom; drag it up or down to change that (it replaces the old sensitivity slider). */
   #hud { position:absolute; left:20px; top:74px; display:none; z-index:6; flex-direction:column; align-items:center;
-    gap:7px; padding:8px 6px 10px; background:var(--panel); border-radius:99px; backdrop-filter:blur(8px);
+    gap:7px; padding:10px 6px 8px; background:var(--panel); border-radius:99px; backdrop-filter:blur(8px);
     border:1px solid rgba(255,255,255,.14); }
-  #hud .ico { font-size:15px; line-height:18px; }
+  #hud .ico { width:18px; height:18px; fill:none; stroke:#fff; stroke-width:1.8; stroke-linecap:round; }
+  #hud .ico .eye { fill:#fff; stroke:none; }
   #meterWrap { position:relative; width:24px; height:96px; cursor:ns-resize; touch-action:none; border-radius:6px; }
   #meterWrap:focus-visible { outline:2px solid var(--pink); outline-offset:2px; }
   #meter { position:absolute; left:50%; top:0; bottom:0; width:8px; transform:translateX(-50%); border-radius:99px;
@@ -246,12 +247,12 @@
     <p class="tip">Tap a sticker at the top right to change the flower. Drag the white line on the smile meter to change how big a smile it takes.</p>
   </div>
   <div id="hud" title="Your smile. Flowers bloom when it passes the white line - drag the line to change how big a smile it takes">
-    <span class="ico" aria-hidden="true">😊</span>
     <div id="meterWrap" role="slider" tabindex="0" aria-label="Smile needed to bloom" aria-orientation="vertical"
       aria-valuemin="15" aria-valuemax="80" aria-valuenow="45">
       <div id="meter"><div id="meterFill"></div></div>
       <div id="meterMark"></div>
     </div>
+    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5"/><path d="M8 14.2c1 1.5 2.4 2.3 4 2.3s3-.8 4-2.3"/><circle class="eye" cx="9" cy="9.8" r="1.1"/><circle class="eye" cx="15" cy="9.8" r="1.1"/></svg>
     <input id="sens" type="range" min="0.15" max="0.8" step="0.01" value="0.45" hidden />
   </div>
   <div id="shoot">
