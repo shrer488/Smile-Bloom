@@ -12,7 +12,7 @@ Smile at your webcam and flowers bloom behind you, with a soft portrait blur and
 4. Tap a sticker at the top right to change the flower.
 5. Use the buttons at the bottom of the video to take a photo or record a video. The timer button on the left adds a 3 or 10 second countdown first.
 
-At the top left you can switch between wide and vertical video, watch your smile meter, and set how big a smile it takes.
+At the top left you can switch between wide and vertical video and watch your smile meter. Flowers bloom when your smile passes the white line; drag the line up or down to change how big a smile it takes.
 
 The first load can take a few seconds while the face-tracking models download.
 

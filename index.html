@@ -23,16 +23,20 @@
     box-shadow:0 8px 30px rgba(255,111,165,.45); }
   #status { position:absolute; top:16px; left:50%; transform:translateX(-50%); background:var(--panel);
     padding:8px 16px; border-radius:999px; font-size:14px; backdrop-filter:blur(8px); }
-  /* smile meter + sensitivity: two vertical bars, top left under the frame-shape button */
-  #hud { position:absolute; left:16px; top:76px; display:none; z-index:6; gap:14px; padding:12px 12px 14px;
-    background:var(--panel); border-radius:24px; backdrop-filter:blur(8px); border:1px solid rgba(255,255,255,.14); }
-  #hud .col { display:flex; flex-direction:column; align-items:center; gap:10px; }
-  #hud .ico { font-size:17px; line-height:20px; height:20px; display:grid; place-items:center; }
-  #hud .ico svg { width:18px; height:18px; fill:none; stroke:#fff; stroke-width:2; stroke-linecap:round; opacity:.9; }
-  #meter { width:10px; height:130px; border-radius:99px; background:rgba(255,255,255,.18); overflow:hidden; position:relative; }
+  /* smile meter, top left under the frame-shape button. The white line is how big a smile it
+     takes to bloom; drag it up or down to change that (it replaces the old sensitivity slider). */
+  #hud { position:absolute; left:20px; top:74px; display:none; z-index:6; flex-direction:column; align-items:center;
+    gap:7px; padding:8px 6px 10px; background:var(--panel); border-radius:99px; backdrop-filter:blur(8px);
+    border:1px solid rgba(255,255,255,.14); }
+  #hud .ico { font-size:15px; line-height:18px; }
+  #meterWrap { position:relative; width:24px; height:96px; cursor:ns-resize; touch-action:none; border-radius:6px; }
+  #meterWrap:focus-visible { outline:2px solid var(--pink); outline-offset:2px; }
+  #meter { position:absolute; left:50%; top:0; bottom:0; width:8px; transform:translateX(-50%); border-radius:99px;
+    background:rgba(255,255,255,.18); overflow:hidden; }
   #meterFill { position:absolute; left:0; right:0; bottom:0; height:0; background:linear-gradient(0deg,#ffd36e,#ff7eb6); transition:height .08s; }
-  #meterMark { position:absolute; left:-3px; right:-3px; height:2px; background:#fff; margin-bottom:-1px; }
-  #sens { writing-mode:vertical-lr; direction:rtl; width:16px; height:130px; margin:0; accent-color:var(--pink); cursor:pointer; }
+  #meterMark { position:absolute; left:2px; right:2px; height:4px; margin-bottom:-2px; border-radius:2px; background:#fff;
+    box-shadow:0 1px 4px rgba(0,0,0,.4); transition:left .12s, right .12s; }
+  #meterWrap:hover #meterMark, #meterWrap.drag #meterMark { left:-1px; right:-1px; }
 
   /* capture bar: bottom centre inside the video frame (placed by placeHud) */
   #shoot { position:absolute; bottom:16px; left:50%; transform:translateX(-50%); display:none; z-index:6;
@@ -239,17 +243,16 @@
       <dt><kbd>I</kbd></dt><dd>Invert the person mask</dd>
       <dt><kbd>?</kbd></dt><dd>Show or hide this list</dd>
     </dl>
-    <p class="tip">You can also tap a sticker at the top right to change the flower.</p>
+    <p class="tip">Tap a sticker at the top right to change the flower. Drag the white line on the smile meter to change how big a smile it takes.</p>
   </div>
-  <div id="hud">
-    <div class="col" title="Your smile. Flowers bloom when it passes the white line">
-      <span class="ico" aria-hidden="true">😊</span>
-      <div id="meter"><div id="meterFill"></div><div id="meterMark"></div></div>
+  <div id="hud" title="Your smile. Flowers bloom when it passes the white line - drag the line to change how big a smile it takes">
+    <span class="ico" aria-hidden="true">😊</span>
+    <div id="meterWrap" role="slider" tabindex="0" aria-label="Smile needed to bloom" aria-orientation="vertical"
+      aria-valuemin="15" aria-valuemax="80" aria-valuenow="45">
+      <div id="meter"><div id="meterFill"></div></div>
+      <div id="meterMark"></div>
     </div>
-    <label class="col" title="Sensitivity: higher means a smaller smile is enough">
-      <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></span>
-      <input id="sens" type="range" min="0.15" max="0.8" step="0.01" value="0.45" aria-label="Sensitivity" />
-    </label>
+    <input id="sens" type="range" min="0.15" max="0.8" step="0.01" value="0.45" hidden />
   </div>
   <div id="shoot">
     <button id="timerBtn" class="small" title="Timer: off (C)" aria-label="Timer off">
@@ -2097,6 +2100,28 @@ function placeHud() {
     Object.assign(el.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
 }
 new ResizeObserver(placeHud).observe(canvas);
+
+// Drag the white line on the smile meter (or use the arrow keys on it) to set how big a smile it takes.
+const meterWrap = $("meterWrap");
+function setThreshold(v) {
+  v = clamp(v, +sens.min, +sens.max);
+  sens.value = v;
+  meterMark.style.bottom = v * 100 + "%";
+  meterWrap.setAttribute("aria-valuenow", Math.round(v * 100));
+}
+meterWrap.addEventListener("pointerdown", (e) => {
+  const follow = (ev) => { const r = meterWrap.getBoundingClientRect(); setThreshold(1 - (ev.clientY - r.top) / r.height); };
+  meterWrap.setPointerCapture(e.pointerId);
+  meterWrap.classList.add("drag");
+  follow(e);
+  meterWrap.onpointermove = follow;
+  meterWrap.onpointerup = meterWrap.onpointercancel = () => { meterWrap.onpointermove = null; meterWrap.classList.remove("drag"); };
+});
+meterWrap.addEventListener("keydown", (e) => {
+  const d = { ArrowUp: .02, ArrowRight: .02, ArrowDown: -.02, ArrowLeft: -.02 }[e.key];
+  if (d) { e.preventDefault(); setThreshold(+sens.value + d); }
+});
+setThreshold(+sens.value);
 addEventListener("resize", placeHud);
 
 function toggleVertical() {
