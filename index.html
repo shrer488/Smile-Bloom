@@ -412,11 +412,34 @@ const PHONE = matchMedia("(max-width: 700px), (pointer: coarse) and (max-width: 
 if (PHONE) document.body.classList.add("phone");
 const video = $("v"), view = $("c"), viewCtx = view.getContext("2d");
 const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d");
+// Phones held sideways (with the screen's rotation lock on) give the camera picture turned 90°, so
+// you'd lie sideways and the flowers would grow from the side of you. We spot that from your face
+// and turn the picture upright before the effect runs (SRC), then turn it back for the screen.
+const rotC = document.createElement("canvas"), rotCtx = rotC.getContext("2d");
+let SRC = video, rotK = 0, rotVotes = 0;   // rotK: quarter turns (clockwise) applied to the camera picture
+function uprightSource() {
+  if (!rotK) return video;
+  const w = video.videoWidth, h = video.videoHeight, odd = rotK & 1;
+  const W = odd ? h : w, H = odd ? w : h;
+  if (rotC.width !== W || rotC.height !== H) { rotC.width = W; rotC.height = H; }
+  rotCtx.setTransform(1, 0, 0, 1, 0, 0);
+  rotCtx.translate(W / 2, H / 2); rotCtx.rotate(rotK * Math.PI / 2);
+  rotCtx.drawImage(video, -w / 2, -h / 2);
+  return rotC;
+}
+// the saved photo / video: upright, the way you held the phone (the effect canvas itself)
+canvas.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none";
+document.body.appendChild(canvas);
 let viewLayout = { s: 1, x0: 0, y0: 0 };
 function present() {
-  const W = canvas.width, H = canvas.height;
-  if (view.width !== W || view.height !== H) { view.width = W; view.height = H; sizeView(); }
-  viewCtx.drawImage(canvas, 0, 0);
+  const W = canvas.width, H = canvas.height, odd = rotK & 1;
+  const VW = odd ? H : W, VH = odd ? W : H;   // turned back to the screen's way round
+  if (view.width !== VW || view.height !== VH) { view.width = VW; view.height = VH; sizeView(); }
+  if (!rotK) { viewCtx.drawImage(canvas, 0, 0); return; }
+  viewCtx.setTransform(1, 0, 0, 1, 0, 0);
+  viewCtx.translate(VW / 2, VH / 2); viewCtx.rotate(-rotK * Math.PI / 2);
+  viewCtx.drawImage(canvas, -W / 2, -H / 2);
+  viewCtx.setTransform(1, 0, 0, 1, 0, 0);
 }
 // The window's on-screen size is set here (not left to the browser) so a switch between wide and
 // vertical can glide: the size animates in CSS while the picture fills it (object-fit: cover).
@@ -590,7 +613,7 @@ function protectFeatures(c, scale, strength = 1) {
   }
   c.restore();
 }
-let lastVideoTime = -1;
+let lastVideoTime = -1, modelTick = 0;
 let prog = 0;    // 0..1 how far the bloom has spread
 
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -2102,8 +2125,10 @@ function loop(now) {
   if (!running) return;                    // the camera window was closed
   const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
   const t = now / 1000;
-  const vw = video.videoWidth, vh = video.videoHeight;
-  if (!vw) { requestAnimationFrame(loop); return; }
+  if (!video.videoWidth) { requestAnimationFrame(loop); return; }
+  const newFrame = video.currentTime !== lastVideoTime;
+  if (newFrame || SRC !== (rotK ? rotC : video)) SRC = uprightSource();
+  const vw = SRC === video ? video.videoWidth : SRC.width, vh = SRC === video ? video.videoHeight : SRC.height;
 
   // Vertical mode frames you like a phone selfie: the shot follows your face and is zoomed so your
   // face and upper body fill the frame (face about 30% of the width, eyes a little above the middle),
@@ -2151,16 +2176,26 @@ function loop(now) {
   }
 
   // run models on new frames
-  if (video.currentTime !== lastVideoTime) {
-    lastVideoTime = video.currentTime;
+  // phones: run the trackers on every other camera frame (they're the slow part) - the flowers and
+  // video still draw every frame, which keeps it smooth instead of ~10 frames a second
+  if (newFrame) lastVideoTime = video.currentTime;
+  if (newFrame && (!PHONE || (modelTick++ & 1) === 0)) {
     const ts = performance.now();
-    const fr = faceLandmarker.detectForVideo(video, ts);
+    const fr = faceLandmarker.detectForVideo(SRC, ts);
     const mi = pickMainFace(fr);
     if (mi >= 0) {
       const cats = fr.faceBlendshapes[mi].categories;
       const get = (n) => (cats.find((c) => c.categoryName === n) || { score: 0 }).score;
       smileRaw = (get("mouthSmileLeft") + get("mouthSmileRight")) / 2;   // only YOUR smile counts
       const lm = fr.faceLandmarks[mi];
+      if (PHONE) {   // which way is up for your face? (chin -> forehead)
+        const ux = (lm[10].x - lm[152].x) * vw, uy = (lm[10].y - lm[152].y) * vh;
+        let d = Math.atan2(uy, ux) * 180 / Math.PI + 90;           // 0 = upright
+        d = ((d + 540) % 360) - 180;
+        const want = d > 55 ? -1 : d < -55 ? 1 : 0;
+        rotVotes = want ? rotVotes + 1 : 0;
+        if (rotVotes > 8) { rotK = (rotK + want + 4) % 4; rotVotes = 0; sproutsReady = false; }
+      }
       { const fw = Math.abs(lm[454].x - lm[234].x) * vw;
         faceV = { x: lm[1].x * vw, y: lm[1].y * vh, w: fw, top: lm[10].y * vh - 0.3 * fw }; }   // camera pixels, for framing (top ≈ top of your hair)
       const [fx, fy] = videoNormToScreen(lm[10].x, lm[10].y);
@@ -2195,7 +2230,7 @@ function loop(now) {
     } else { smileRaw = 0; features = []; lipsOuter = lipsInner = null; faceOval = null; }
     // hands: every other camera frame to keep things smooth
     if (handLandmarker && (handShapes.length || (handFrame++ & 1) === 0)) {
-      const hr = handLandmarker.detectForVideo(video, ts + 0.02);
+      const hr = handLandmarker.detectForVideo(SRC, ts + 0.02);
       const pts = [], palms = [], shapes = [];
       (hr.landmarks || []).forEach((lm) => {
         const S = (i) => videoNormToScreen(lm[i].x, lm[i].y);
@@ -2223,7 +2258,7 @@ function loop(now) {
       handPts = pts; prevPalms = palms; handShapes = shapes;
     }
     // the cut-out is built after the hands, so your hand shape in it is from this same frame
-    segmenter.segmentForVideo(video, ts + 0.01, onSegment);
+    segmenter.segmentForVideo(SRC, ts + 0.01, onSegment);
   }
 
   // smile state (smoothed, with a short hold so it doesn't flicker)
@@ -2248,7 +2283,7 @@ function loop(now) {
   // 1. camera background — it softly blurs as the flowers come in (like portrait mode).
   // You and the flowers are drawn on top afterwards, so you both stay sharp.
   ctx.setTransform(-1, 0, 0, 1, W, 0);
-  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, W, H);
+  ctx.drawImage(SRC, sx, sy, sw, sh, 0, 0, W, H);
   drawFillTop(ctx, W, H, sx, sw, sh);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   if (glowAmt > 0.01 && haveMask) {
@@ -2260,7 +2295,7 @@ function loop(now) {
     bbctx.globalCompositeOperation = "source-over";
     bbctx.clearRect(0, 0, bw, bh);
     bbctx.setTransform(-1, 0, 0, 1, bw, 0);
-    bbctx.drawImage(video, sx, sy, sw, sh, 0, 0, bw, bh);
+    bbctx.drawImage(SRC, sx, sy, sw, sh, 0, 0, bw, bh);
     bbctx.globalCompositeOperation = "destination-out";
     bbctx.drawImage(maskCanvas, mx0, my0, msw0, msh0, 0, 0, bw, bh);   // exactly your shape — no margin to peek out
     bbctx.globalCompositeOperation = "source-over";
@@ -2345,7 +2380,7 @@ function loop(now) {
     pctx.globalCompositeOperation = "source-over";
     pctx.clearRect(0, 0, W, H);
     pctx.setTransform(-1, 0, 0, 1, W, 0);
-    pctx.drawImage(video, sx, sy, sw, sh, 0, 0, W, H);
+    pctx.drawImage(SRC, sx, sy, sw, sh, 0, 0, W, H);
     pctx.globalCompositeOperation = "destination-in";
     pctx.filter = "blur(2px)";
     pctx.drawImage(maskCanvas, mx, my, msw, msh, 0, 0, W, H);
@@ -2476,7 +2511,7 @@ addEventListener("resize", placeHud);
 function cameraWanted(tall) {
   // the selfie camera's full 4:3 picture, like the camera app (phones turn it upright) - at 1280×960,
   // which keeps the whole flower effect and recording smooth on a phone (1920×1440 was too heavy)
-  if (PHONE) return { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 960 } };
+  if (PHONE) return { facingMode: "user", width: { ideal: 960 }, height: { ideal: 720 } };
   return tall
     ? { aspectRatio: { ideal: 4 / 3 }, width: { ideal: 1920 }, height: { ideal: 1440 }, facingMode: "user" }
     : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" };
@@ -2598,7 +2633,7 @@ function dataURLToBlob(url) {   // synchronous, so the share sheet can still ope
 }
 function takePhoto() {
   if (PHONE) {
-    const blob = dataURLToBlob(view.toDataURL("image/png"));
+    const blob = dataURLToBlob(canvas.toDataURL("image/png"));   // upright, the way you held the phone
     if (!shareNow(blob, "png")) showSaveSheet(blob, "png");
   } else view.toBlob((b) => b && saveBlob(b, "png"), "image/png");
   const f = $("flash"); placeHud();
@@ -2610,7 +2645,7 @@ function startRecording() {
   const btn = $("rec"), timeEl = $("recTime");
   const types = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm"];
   const mimeType = types.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
-  const stream = view.captureStream(30);
+  const stream = (PHONE ? canvas : view).captureStream(30);   // phones: upright, the way you held the phone
   recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: PHONE ? 6_000_000 : 10_000_000 });   // lighter on phones
   chunks = [];
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
