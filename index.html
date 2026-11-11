@@ -335,7 +335,7 @@
     <h2 class="desk-only">Keyboard shortcuts</h2>
     <h2 class="phone-only">How it works</h2>
     <dl class="phone-only">
-      <dt>💾</dt><dd>After a photo or video, tap Save to Photos, then Save Image or Save Video</dd>
+      <dt>💾</dt><dd>After a photo or video, tap Save Image or Save Video to put it in Photos</dd>
       <dt>😊</dt><dd>Smile and flowers bloom around you</dd>
       <dt>🌸</dt><dd>Swipe the flowers at the bottom and tap one to switch</dd>
       <dt>⏺</dt><dd>Tap the red button to record, tap again to stop</dd>
@@ -2551,8 +2551,26 @@ function withTimer(action) {
   }, 1000);
 }
 
+// Phones: open the share sheet ("Save Image" / "Save Video") during the very tap that takes the
+// photo or stops the video - iPhone only allows it during a tap - so it's one tap to save. If the
+// phone can't (or it's after a timer countdown, which isn't a tap), the preview sheet is used instead.
+function shareNow(blob, ext) {
+  const type = (blob.type || (ext === "png" ? "image/png" : "video/mp4")).split(";")[0];
+  const file = new File([blob], `smile-bloom-${Date.now()}.${ext}`, { type });
+  if (!(navigator.canShare && navigator.canShare({ files: [file] }))) return false;
+  navigator.share({ files: [file] }).catch((e) => { if (e.name !== "AbortError") showSaveSheet(blob, ext); });
+  return true;
+}
+function dataURLToBlob(url) {   // synchronous, so the share sheet can still open inside the tap
+  const [head, b64] = url.split(","), bin = atob(b64), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: head.slice(5, head.indexOf(";")) });
+}
 function takePhoto() {
-  view.toBlob((b) => b && saveBlob(b, "png"), "image/png");
+  if (PHONE) {
+    const blob = dataURLToBlob(view.toDataURL("image/png"));
+    if (!shareNow(blob, "png")) showSaveSheet(blob, "png");
+  } else view.toBlob((b) => b && saveBlob(b, "png"), "image/png");
   const f = $("flash"); placeHud();
   f.classList.remove("go"); void f.offsetWidth; f.classList.add("go");
 }
@@ -2568,7 +2586,8 @@ function startRecording() {
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   recorder.onstop = () => {
     const type = recorder.mimeType || "video/webm";
-    saveBlob(new Blob(chunks, { type }), type.includes("mp4") ? "mp4" : "webm");
+    if (sharedEarly) sharedEarly = false;   // already handed to the share sheet on the stop tap
+    else saveBlob(new Blob(chunks, { type }), type.includes("mp4") ? "mp4" : "webm");
     recorder = null;
     clearInterval(recClock);
     btn.classList.remove("on"); timeEl.classList.remove("show");
@@ -2582,8 +2601,15 @@ function startRecording() {
   btn.classList.add("on"); timeEl.classList.add("show");
   btn.title = "Stop recording (R)"; btn.setAttribute("aria-label", "Stop recording");
 }
+let sharedEarly = false;
 function toggleRecord() {
-  if (recorder) { recorder.stop(); return; }           // stopping never waits for the timer
+  if (recorder) {                                      // stopping never waits for the timer
+    if (PHONE && chunks.length) {                      // phones: share what's recorded right away, in this tap
+      const type = recorder.mimeType || "video/mp4";
+      sharedEarly = shareNow(new Blob(chunks, { type }), type.includes("mp4") ? "mp4" : "webm");
+    }
+    recorder.stop(); return;
+  }
   if (timerSecs && !countdown) $("rec").classList.add("armed");
   withTimer(startRecording);
 }
