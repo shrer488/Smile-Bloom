@@ -145,9 +145,21 @@
   /* keyboard shortcuts: "?" button bottom left, panel opens above it */
   body.phone #win { border-radius:0; box-shadow:none; }
   body.phone #c { object-fit:cover; }
-  body.phone #win .bar, body.phone #vert, body.phone #helpBtn, body.phone #help { display:none !important; }
+  body.phone #win .bar, body.phone #vert { display:none !important; }
   body.phone::after { display:none; }   /* no white page frame: the camera fills the screen */
-  body.phone #stickers { top:14px; right:10px; transform:scale(.85); transform-origin:top right; }
+  /* phone: the flowers are a sideways carousel just above the record buttons - swipe, tap to pick */
+  body.phone #stickers { top:auto; bottom:104px; left:0; right:0; flex-direction:row; gap:4px; align-items:center;
+    overflow-x:auto; overflow-y:hidden; scroll-snap-type:x mandatory; scrollbar-width:none;
+    padding:6px calc(50vw - 30px) 16px; -webkit-overflow-scrolling:touch; }
+  body.phone #stickers::-webkit-scrollbar { display:none; }
+  body.phone .sticker { flex:none; width:54px; height:54px; scroll-snap-align:center; }
+  /* phone: the help button sits top right and explains the buttons (no keyboard shortcuts) */
+  body.phone #helpBtn { left:auto; right:14px; top:14px; bottom:auto; }
+  body.phone #help { left:auto; right:14px; top:64px; bottom:auto; min-width:0; width:min(290px, calc(100vw - 28px)); }
+  .phone-only { display:none !important; }
+  body.phone .phone-only { display:grid !important; }
+  body.phone p.phone-only { display:block !important; }
+  body.phone .desk-only { display:none !important; }
   body.phone #hud { left:10px; top:14px; }
   #helpBtn { position:absolute; left:16px; bottom:16px; z-index:6; width:40px; height:40px; border-radius:50%;
     border:1px solid rgba(255,255,255,.22); background:var(--panel); color:#fff; font-family:inherit;
@@ -287,8 +299,16 @@
   </button>
   <button id="helpBtn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" aria-expanded="false" aria-controls="help">?</button>
   <div id="help" role="dialog" aria-label="Keyboard shortcuts">
-    <h2>Keyboard shortcuts</h2>
-    <dl>
+    <h2 class="desk-only">Keyboard shortcuts</h2>
+    <h2 class="phone-only">How it works</h2>
+    <dl class="phone-only">
+      <dt>😊</dt><dd>Smile and flowers bloom around you</dd>
+      <dt>🌸</dt><dd>Swipe the flowers at the bottom and tap one to switch</dd>
+      <dt>⏺</dt><dd>Tap the red button to record, tap again to stop</dd>
+      <dt>📷</dt><dd>The camera button takes a photo</dd>
+      <dt>⏱</dt><dd>The timer adds a 3 or 10 second countdown</dd>
+    </dl>
+    <dl class="desk-only">
       <dt><kbd>F</kbd></dt><dd>Next flower</dd>
       <dt><kbd>T</kbd></dt><dd>Preview the flowers without smiling</dd>
       <dt><kbd>V</kbd></dt><dd>Switch to vertical video</dd>
@@ -299,7 +319,8 @@
       <dt><kbd>I</kbd></dt><dd>Invert the person mask</dd>
       <dt><kbd>?</kbd></dt><dd>Show or hide this list</dd>
     </dl>
-    <p class="tip">Tap a sticker at the top right to change the flower. Drag the white line on the smile meter to change how big a smile it takes.</p>
+    <p class="tip desk-only">Tap a sticker at the top right to change the flower. Drag the white line on the smile meter to change how big a smile it takes.</p>
+    <p class="tip phone-only">Drag the white line on the smile meter (top left) to change how big a smile it takes.</p>
   </div>
   <div id="hud" title="Your smile. Flowers bloom when it passes the white line - drag the line to change how big a smile it takes">
     <div id="meterWrap" role="slider" tabindex="0" aria-label="Smile needed to bloom" aria-orientation="vertical"
@@ -1616,7 +1637,11 @@ function chooseFlower(key) {
   if (!SETS[key]?.ready) return;
   flowerKind = key;
   try { localStorage.setItem("flower", key); } catch {}
-  document.querySelectorAll(".sticker").forEach((b, i) => b.classList.toggle("on", Object.keys(SETS)[i] === key));
+  document.querySelectorAll(".sticker").forEach((b, i) => {
+    const on = Object.keys(SETS)[i] === key;
+    b.classList.toggle("on", on);
+    if (on && PHONE) b.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });   // carousel: centre the pick
+  });
 }
 renderStickers();
 window._sets = SETS;   // for debugging in the console
