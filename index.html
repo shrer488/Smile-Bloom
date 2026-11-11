@@ -147,7 +147,7 @@
   const fs = `#version 300 es
     precision highp float;
     in vec2 uv; out vec4 o;
-    uniform sampler2D tex; uniform float t, cs; uniform vec2 cover, res;   // cs: tile size in canvas pixels
+    uniform sampler2D tex; uniform float t; uniform vec2 cover;
     // smooth value noise + a few octaves of it: irregular, never-repeating gusts instead of even waves
     float h(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
     float n(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3. - 2. * f);
@@ -155,50 +155,31 @@
     float fbm(vec2 p) { return n(p) * .55 + n(p * 2.1 + 7.3) * .3 + n(p * 4.3 + 3.1) * .15; }
 
     void main() {
-      // Pixel grid: the screen is cut into small square tiles. Each tile shows one colour (the
-      // photo averaged over that tile), with a thin darker line between tiles, and a faint
-      // "printed" texture inside some tiles - like a low-res LED / mosaic picture.
-      vec2 fc = gl_FragCoord.xy;
-      vec2 cell = floor(fc / cs);
-      vec2 cc = (cell + .5) * cs;                       // centre of this tile, in canvas pixels
-      vec2 cuv = vec2(cc.x / res.x, 1. - cc.y / res.y);
-
       // fit the photo like CSS "cover": fill the screen, keep its shape, crop the overflow
-      vec2 q = (cuv - .5) * cover + .5;
+      vec2 q = (uv - .5) * cover + .5;
       float x = q.x, y = q.y;
 
-      // Where the grass is (from a blurred copy, so the edge is soft): sky and hills stay still.
+      // Where the grass is. Worked out from a blurred copy of the photo so the edge is soft and
+      // steady: the sky (blue/white) never moves, the hills never move, only the grass on them does.
       vec3 blur = textureLod(tex, q, 4.5).rgb;
       float grass = smoothstep(.0, .07, blur.g - blur.b) * smoothstep(.02, .1, blur.g - blur.r * .9);
 
-      // Wind: soft gusts drifting across from the left, with small ripples inside them.
+      // Gusts: soft, uneven patches of wind drifting across the meadow from the left. They reach
+      // the far hills (higher up) a beat after the near grass.
       float gust = smoothstep(.3, .85, fbm(vec2(x * 1.6 - t * .2 + (1. - y) * .6, y * 2.4)));
+      // Inside a gust the grass ripples: slow, small waves rolling the same way as the wind.
       float ripple = sin(x * 26. - t * 2.1 + y * 9. + fbm(vec2(x * 3., y * 5.)) * 4.) * .6
                    + sin(x * 41. - t * 3.0 + y * 15.) * .4;
-      float near = .4 + .6 * y;
+      float near = .4 + .6 * y;                         // near grass (bottom) moves more than far grass
       float dx = ripple * (.25 + .75 * gust) * .0016 * near * grass;
+      vec3 c = texture(tex, clamp(vec2(x - dx, y), 0., 1.)).rgb;
 
-      // the tile's colour: the photo averaged over the tile
-      float lod = log2(max(1., cs * float(textureSize(tex, 0).x) * cover.x / res.x));
-      vec3 c = textureLod(tex, clamp(vec2(x - dx, y), 0., 1.), lod).rgb;
-
+      // Grass flattened by the wind shows its paler, silvery side, so each gust rolls across the
+      // meadow as a soft band of lighter green - the main thing you see when wind crosses a field.
       float sheen = gust * grass * (.75 + .25 * ripple);
       float l = dot(c, vec3(.299, .587, .114));
       c = mix(c, vec3(l) * vec3(1.03, 1.07, .98), sheen * .2);
-      c = c * (1. + sheen * .1) + sheen * .02;
-
-      // inside the tile: a slightly rounded square with a darker gap around it
-      vec2 f = fc - cell * cs;                          // 0..cs inside this tile
-      vec2 e = min(f, cs - f);                          // distance to the tile's edges
-      float gap = cs * .14;
-      float body = smoothstep(gap * .5, gap * .5 + 1.2, min(e.x, e.y));
-      // faint glyph-like marks: a 3x3 pattern of tiny dots, different in every tile, a bit
-      // stronger in darker areas (like the reference's printed texture)
-      vec2 sub = floor(f / cs * 3.);
-      float dot3 = step(.62, h(cell * 3.7 + sub)) * smoothstep(.85, .25, l);
-      vec3 col = c * (1. - dot3 * .10);
-      col = mix(c * .74, col, body);                    // grid lines are the tile's colour, darker
-      o = vec4(col * (.97 + .06 * h(cell)), 1.);        // a touch of tile-to-tile variation
+      o = vec4(c * (1. + sheen * .1) + sheen * .02, 1.);
     }`;
   const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
@@ -215,8 +196,6 @@
   const loc = gl.getAttribLocation(prog, "p");
   gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
   const uT = gl.getUniformLocation(prog, "t"), uCover = gl.getUniformLocation(prog, "cover");
-  const uRes = gl.getUniformLocation(prog, "res"), uCs = gl.getUniformLocation(prog, "cs");
-  const TILE = 9;   // tile size in CSS pixels
 
   const img = new Image();
   img.src = "hills.webp";
@@ -233,8 +212,6 @@
       const r = Math.min(devicePixelRatio || 1, 1.5);   // keep it light: the face tracking needs the GPU too
       cv.width = Math.round(innerWidth * r); cv.height = Math.round(innerHeight * r);
       gl.viewport(0, 0, cv.width, cv.height);
-      gl.uniform2f(uRes, cv.width, cv.height);
-      gl.uniform1f(uCs, TILE * cv.width / innerWidth);
       const sa = innerWidth / innerHeight, ia = img.width / img.height;
       gl.uniform2f(uCover, sa > ia ? 1 : sa / ia, sa > ia ? ia / sa : 1);
     };
