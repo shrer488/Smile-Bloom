@@ -18,7 +18,14 @@
   /* swaying grass: a WebGL layer drawn over the static photo; if WebGL is missing, the photo stays */
   #grass { position:fixed; inset:0; width:100vw; height:100vh; max-width:none; max-height:none;
     border-radius:0; box-shadow:none; pointer-events:none; }
-  #start { position:absolute; padding:18px 30px; font-size:20px; border:0; border-radius:999px;
+  /* first screen: a heading in the middle of the page with the Start camera button under it */
+  #intro { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:28px; padding:0 24px; text-align:center; pointer-events:none; }
+  #intro h1 { margin:0; max-width:14em; font-size:clamp(30px, 5.2vw, 64px); line-height:1.08; font-weight:800;
+    letter-spacing:-.01em; color:#fff; text-wrap:balance;
+    text-shadow:0 2px 6px rgba(20,30,40,.25), 0 8px 40px rgba(20,30,40,.35); }
+  @media (max-width:640px) { #intro { padding:0 86px 0 20px; } }   /* clear of the flower stickers on phones */
+  #start { pointer-events:auto; padding:18px 30px; font-size:20px; border:0; border-radius:999px;
     background:linear-gradient(135deg,#ff9ac8,#ff6fa5); color:#fff; cursor:pointer; font-weight:700;
     box-shadow:0 8px 30px rgba(255,111,165,.45); }
   #status { position:absolute; top:16px; left:50%; transform:translateX(-50%); background:var(--panel);
@@ -220,9 +227,12 @@
 </script>
 <div id="stage">
   <canvas id="c" width="1280" height="720"></canvas>
-  <button id="start">🌸 Start camera</button>
+  <div id="intro">
+    <h1>Smile to make flowers bloom behind you</h1>
+    <button id="start">🌸 Start camera</button>
+  </div>
   <div id="stickers" aria-label="Choose a flower"></div>
-  <div id="status">Smile to make flowers bloom behind you</div>
+  <div id="status" style="display:none"></div>
   <!-- frame shape: the icon is the video's current shape and turns when you switch -->
   <button id="vert" title="Switch to vertical video (V)" aria-label="Switch to vertical video" aria-pressed="false">
     <svg viewBox="0 0 32 32" aria-hidden="true">
@@ -457,7 +467,7 @@ async function makeModels() {
 }
 
 $("start").onclick = async () => {
-  $("start").style.display = "none";
+  $("intro").style.display = "none";
   try {
     setStatus("Asking for camera…");
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -475,7 +485,7 @@ $("start").onclick = async () => {
   } catch (e) {
     console.error(e);
     setStatus("Couldn't start: " + (e.message || e));
-    $("start").style.display = "block";
+    $("intro").style.display = "flex";
   }
 };
 
