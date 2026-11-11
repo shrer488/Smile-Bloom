@@ -197,18 +197,19 @@
     font-size:18px; font-weight:700; line-height:1; cursor:pointer; backdrop-filter:blur(8px);
     box-shadow:0 4px 16px rgba(0,0,0,.3); transition:background .2s; }
   #helpBtn:hover, #helpBtn.on { background:var(--pink); }
-  #help { position:absolute; left:16px; bottom:66px; z-index:6; background:rgba(20,10,20,.82); backdrop-filter:blur(10px);
-    border-radius:16px; padding:14px 16px 12px; min-width:250px; max-width:calc(100vw - 32px);
-    box-shadow:0 10px 40px rgba(0,0,0,.45); opacity:0; transform:translateY(8px); pointer-events:none;
+  /* help card, in the site's look: white card, sky-blue ink, handwritten title (like the heading and Start camera) */
+  #help { position:absolute; left:16px; bottom:66px; z-index:6; width:270px; max-width:calc(100vw - 32px);
+    background:#fff; color:#24447a; border-radius:20px; padding:14px 16px 14px;
+    box-shadow:0 14px 40px rgba(10,25,50,.28); opacity:0; transform:translateY(8px); pointer-events:none;
     transition:opacity .2s, transform .2s; }
   #help.open { opacity:1; transform:none; pointer-events:auto; }
-  #help h2 { margin:0 0 10px; font-size:14px; letter-spacing:.02em; }
-  #help dl { margin:0; display:grid; grid-template-columns:auto 1fr; gap:8px 12px; align-items:center; font-size:13px; }
+  #help h2 { margin:0 0 10px; font:400 26px/1 "Give You Glory", cursive; color:#24447a; }
+  #help dl { margin:0; display:grid; grid-template-columns:auto 1fr; gap:7px 10px; align-items:center; font-size:13px; }
   #help dt { margin:0; }
-  #help dd { margin:0; opacity:.9; }
-  #help kbd { display:inline-block; min-width:26px; text-align:center; padding:3px 7px; border-radius:7px;
-    background:rgba(255,255,255,.14); border-bottom:2px solid rgba(255,255,255,.22); font:700 12px ui-monospace, monospace; }
-  #help .tip { margin:12px 0 0; font-size:11.5px; opacity:.6; }
+  #help dd { margin:0; }
+  #help kbd { display:inline-block; min-width:24px; text-align:center; padding:3px 6px; border-radius:7px;
+    background:#eef3fb; color:#24447a; border-bottom:2px solid #d3deef; font:700 12px ui-monospace, monospace; }
+  #help .tip { margin:12px 0 0; font-size:11.5px; line-height:1.4; color:#5a6f93; }
 </style>
 </head>
 <body>
@@ -336,12 +337,12 @@
     <h2 class="desk-only">Keyboard shortcuts</h2>
     <h2 class="phone-only">How it works</h2>
     <dl class="phone-only">
-      <dt>💾</dt><dd>After a photo or video, tap Save Image or Save Video to put it in Photos</dd>
       <dt>😊</dt><dd>Smile and flowers bloom around you</dd>
       <dt>🌸</dt><dd>Swipe the flowers at the bottom and tap one to switch</dd>
       <dt>⏺</dt><dd>Tap the red button to record, tap again to stop</dd>
       <dt>📷</dt><dd>The camera button takes a photo</dd>
-      <dt>⏱</dt><dd>The timer adds a 3 or 10 second countdown</dd>
+      <dt>⏱</dt><dd>The timer adds a 3 or 10 second countdown (tap it again to cancel)</dd>
+      <dt>💾</dt><dd>To keep it: photos - tap Save Image; videos - tap Save to Photos, then Save Video</dd>
     </dl>
     <dl class="desk-only">
       <dt><kbd>F</kbd></dt><dd>Next flower</dd>
@@ -2451,7 +2452,9 @@ addEventListener("resize", placeHud);
 // 4:3 picture (as high as it goes), so the tall frame keeps more of you above and below. Cameras
 // without a taller mode just give their usual picture.
 function cameraWanted(tall) {
-  if (PHONE) return { facingMode: "user", width: { ideal: 1920 }, height: { ideal: 1440 } };   // the selfie camera's full 4:3 picture, like the camera app (phones turn it upright)
+  // the selfie camera's full 4:3 picture, like the camera app (phones turn it upright) - at 1280×960,
+  // which keeps the whole flower effect and recording smooth on a phone (1920×1440 was too heavy)
+  if (PHONE) return { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 960 } };
   return tall
     ? { aspectRatio: { ideal: 4 / 3 }, width: { ideal: 1920 }, height: { ideal: 1440 }, facingMode: "user" }
     : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" };
@@ -2586,7 +2589,7 @@ function startRecording() {
   const types = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm"];
   const mimeType = types.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
   const stream = view.captureStream(30);
-  recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 10_000_000 });
+  recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: PHONE ? 6_000_000 : 10_000_000 });   // lighter on phones
   chunks = [];
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   recorder.onstop = () => {
@@ -2609,10 +2612,6 @@ function startRecording() {
 let sharedEarly = false;
 function toggleRecord() {
   if (recorder) {                                      // stopping never waits for the timer
-    if (PHONE && chunks.length) {                      // phones: share what's recorded right away, in this tap
-      const type = recorder.mimeType || "video/mp4";
-      sharedEarly = shareNow(new Blob(chunks, { type }), type.includes("mp4") ? "mp4" : "webm");
-    }
     recorder.stop(); return;
   }
   if (timerSecs && !countdown) $("rec").classList.add("armed");
