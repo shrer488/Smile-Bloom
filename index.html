@@ -55,7 +55,7 @@
   @media (max-width:640px) { #intro { padding:0 86px 0 20px; } }   /* clear of the flower stickers on narrow screens */
   body.phone #intro { padding:0 20px 8vh; }
   body.phone #intro h1 { font-size:63px; }   /* phones: 1.5x the usual 42px heading */
-  body.phone.live #stage { padding-bottom:100px; }   /* camera picture centred in the space above the flowers */   /* phones: the flowers are along the bottom, so centre the heading */
+  body.phone.live #stage { padding-bottom:92px; }   /* camera picture centred in the space above the flowers */   /* phones: the flowers are along the bottom, so centre the heading */
   #start { pointer-events:auto; padding:8px 25px; font-size:20px; border:0; border-radius:999px;
     background:#fff; color:#24447a; cursor:pointer; font-weight:700; transition:transform .15s, box-shadow .15s; }
   #start:hover { transform:translateY(-1px); box-shadow:0 8px 24px rgba(20,45,90,.22); }
@@ -146,6 +146,7 @@
   #vert .frame { transform-origin:16px 16px; transition:transform .35s cubic-bezier(.3,1.4,.5,1); }
   #vert.on .frame { transform:rotate(90deg); }
   /* keyboard shortcuts: "?" button bottom left, panel opens above it */
+  body.phone #c { object-fit:cover; }
   body.phone #win { border-radius:18px; box-shadow:0 10px 40px rgba(10,25,50,.35); }
   body.phone #win .bar, body.phone #vert { display:none !important; }
   body.phone::after { display:none; }   /* no white page frame: the camera fills the screen */
@@ -410,9 +411,11 @@ function present() {
 // vertical can glide: the size animates in CSS while the picture fills it (object-fit: cover).
 function sizeView(aspect) {
   if (PHONE) {   // like the camera app: the whole picture, as big as fits; the controls sit inside it
-    const a = view.width / view.height, room = innerHeight - 130;   // leave room below for the flowers
-    let w = innerWidth - 20, h = w / a;
-    if (h > room) { h = room; w = h * a; }
+    const a = view.width / view.height, room = innerHeight - 118;   // leave room below for the flowers
+    // as tall as the space allows (up to ~15% taller than the picture's own shape - the sides are
+    // trimmed a little to fit, like the camera app does)
+    let w = innerWidth - 20, h = Math.min(room, (w / a) * 1.15);
+    if (h < w / a) w = h * a;   // short screen: shrink to fit instead of cropping
     view.style.width = Math.round(w) + "px"; view.style.height = Math.round(h) + "px";
     return;
   }
@@ -2528,6 +2531,8 @@ function downloadBlob(blob, ext) {
 const TIMERS = [0, 3, 10];
 let timerSecs = 0, countdown = null;
 function cycleTimer() {
+  // tapping the timer while a countdown is running cancels it (no photo / recording happens)
+  if (countdown) { cancelCountdown(); return; }
   timerSecs = TIMERS[(TIMERS.indexOf(timerSecs) + 1) % TIMERS.length];
   const b = $("timerBtn"), label = timerSecs ? `Timer: ${timerSecs} seconds` : "Timer: off";
   b.classList.toggle("on", timerSecs > 0);
