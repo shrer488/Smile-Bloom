@@ -52,7 +52,9 @@
     font-size:clamp(42px, 4.1vw, 64px); line-height:.78; font-weight:400; font-style:normal; letter-spacing:0;
     color:#fff; }
   #intro h1 em { font-style:normal; }
-  @media (max-width:640px) { #intro { padding:0 86px 0 20px; } }   /* clear of the flower stickers on phones */
+  @media (max-width:640px) { #intro { padding:0 86px 0 20px; } }   /* clear of the flower stickers on narrow screens */
+  body.phone #intro { padding:0 20px 8vh; }
+  body.phone.live #stage { padding-bottom:100px; }   /* camera picture centred in the space above the flowers */   /* phones: the flowers are along the bottom, so centre the heading */
   #start { pointer-events:auto; padding:8px 25px; font-size:20px; border:0; border-radius:999px;
     background:#fff; color:#24447a; cursor:pointer; font-weight:700; transition:transform .15s, box-shadow .15s; }
   #start:hover { transform:translateY(-1px); box-shadow:0 8px 24px rgba(20,45,90,.22); }
@@ -149,7 +151,10 @@
   /* phone: the flowers are a sideways carousel just above the record buttons - swipe, tap to pick */
   body.phone #stickers { top:auto; bottom:104px; left:0; right:0; flex-direction:row; gap:4px; align-items:center;
     overflow-x:auto; overflow-y:hidden; scroll-snap-type:x mandatory; scrollbar-width:none;
-    padding:6px calc(50% - 27px) 16px; -webkit-overflow-scrolling:touch; }
+    padding:6px 12px 16px; -webkit-overflow-scrolling:touch; }
+  /* centred when they all fit, still swipeable when they don't */
+  body.phone .sticker:first-child { margin-left:auto; }
+  body.phone .sticker:last-child { margin-right:auto; }
   body.phone #stickers::-webkit-scrollbar { display:none; }
   body.phone .sticker { flex:none; width:54px; height:54px; scroll-snap-align:center; }
   /* phone: the help button sits top right and explains the buttons (no keyboard shortcuts) */
@@ -367,7 +372,7 @@ function present() {
 // vertical can glide: the size animates in CSS while the picture fills it (object-fit: cover).
 function sizeView(aspect) {
   if (PHONE) {   // like the camera app: the whole picture, as big as fits; the controls sit inside it
-    const a = view.width / view.height, room = innerHeight - 24;
+    const a = view.width / view.height, room = innerHeight - 130;   // leave room below for the flowers
     let w = innerWidth - 20, h = w / a;
     if (h > room) { h = room; w = h * a; }
     view.style.width = Math.round(w) + "px"; view.style.height = Math.round(h) + "px";
@@ -2361,12 +2366,8 @@ function placeHud() {
   const bar = $("shoot");
   bar.style.left = r.left + r.width / 2 + "px";
   bar.style.bottom = Math.max(16, innerHeight - r.bottom + 16) + "px";
-  if (PHONE) {   // camera on: the flower carousel rides just above the record bar, inside the picture;
-    const st = $("stickers");   // start screen: it sits along the bottom of the screen
-    const on = document.body.classList.contains("live");
-    Object.assign(st.style, on
-      ? { left: r.left + "px", right: (innerWidth - r.right) + "px", bottom: (innerHeight - r.bottom + 16 + bar.offsetHeight + 6) + "px" }
-      : { left: "0px", right: "0px", bottom: "max(28px, env(safe-area-inset-bottom))" });
+  if (PHONE) {   // the flower carousel sits below the camera picture, near the bottom of the screen
+    Object.assign($("stickers").style, { left: "0px", right: "0px", bottom: "max(20px, env(safe-area-inset-bottom))" });
   }
   for (const el of [$("count"), $("flash")])   // countdown and flash cover exactly the video
     Object.assign(el.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
