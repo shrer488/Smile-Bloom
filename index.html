@@ -144,7 +144,9 @@
   #vert.on .frame { transform:rotate(90deg); }
   /* keyboard shortcuts: "?" button bottom left, panel opens above it */
   body.phone #win { border-radius:0; box-shadow:none; }
-  body.phone #c { object-fit:cover; }
+  body.phone.live { background:#000; }
+  body.phone.live #grass, body.phone.live #grain { display:none; }
+  body.phone #stage { align-items:flex-start; padding-top:max(env(safe-area-inset-top), 8px); }
   body.phone #win .bar, body.phone #vert { display:none !important; }
   body.phone::after { display:none; }   /* no white page frame: the camera fills the screen */
   /* phone: the flowers are a sideways carousel just above the record buttons - swipe, tap to pick */
@@ -366,8 +368,11 @@ function present() {
 // The window's on-screen size is set here (not left to the browser) so a switch between wide and
 // vertical can glide: the size animates in CSS while the picture fills it (object-fit: cover).
 function sizeView(aspect) {
-  if (PHONE) {   // like a camera app: the picture fills the whole screen (object-fit: cover trims a sliver)
-    view.style.width = innerWidth + "px"; view.style.height = innerHeight + "px";
+  if (PHONE) {   // like the camera app: the whole picture, full width, with the controls on black below it
+    const a = view.width / view.height, room = innerHeight - 190;
+    let w = innerWidth, h = w / a;
+    if (h > room) { h = room; w = h * a; }
+    view.style.width = Math.round(w) + "px"; view.style.height = Math.round(h) + "px";
     return;
   }
   const maxW = Math.max(200, innerWidth - 200), maxH = Math.max(200, innerHeight - 150);
@@ -2032,7 +2037,7 @@ function loop(now) {
   // face and upper body fill the frame (face about 30% of the width, eyes a little above the middle),
   // easing smoothly as you move. With no face found, it shows the middle of the picture.
   let sw = vw, sh = vh, sx = 0, sy = 0, W = vw, H = vh;
-  if (vertical) {
+  if (vertical && !PHONE) {   // (phones show the camera's own picture uncropped, like the camera app)
     // The whole 9:16 phone frame is part of the effect. The camera gives a zoomed-out 3:4 slice of
     // you; the frame reaches a little above the top of that slice, and that bit of "room" is filled
     // with the wall colour (fillTop) - flowers bloom over it like anywhere else, nothing is stretched.
@@ -2356,7 +2361,7 @@ function placeHud() {
   if (!r.width) return;
   const bar = $("shoot");
   bar.style.left = r.left + r.width / 2 + "px";
-  bar.style.bottom = Math.max(16, innerHeight - r.bottom + 16) + "px";
+  bar.style.bottom = PHONE ? "max(22px, env(safe-area-inset-bottom))" : Math.max(16, innerHeight - r.bottom + 16) + "px";
   for (const el of [$("count"), $("flash")])   // countdown and flash cover exactly the video
     Object.assign(el.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
 }
@@ -2389,7 +2394,7 @@ addEventListener("resize", placeHud);
 // 4:3 picture (as high as it goes), so the tall frame keeps more of you above and below. Cameras
 // without a taller mode just give their usual picture.
 function cameraWanted(tall) {
-  if (PHONE) return { facingMode: "user", width: { ideal: 720 }, height: { ideal: 1280 } };   // the phone's own portrait selfie camera
+  if (PHONE) return { facingMode: "user", width: { ideal: 1920 }, height: { ideal: 1440 } };   // the selfie camera's full 4:3 picture, like the camera app (phones turn it upright)
   return tall
     ? { aspectRatio: { ideal: 4 / 3 }, width: { ideal: 1920 }, height: { ideal: 1440 }, facingMode: "user" }
     : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" };
