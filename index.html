@@ -323,6 +323,7 @@
     </dl>
     <p class="tip desk-only">Tap a sticker at the top right to change the flower. Drag the white line on the smile meter to change how big a smile it takes.</p>
     <p class="tip phone-only">Drag the white line on the smile meter (top left) to change how big a smile it takes.</p>
+    <p class="tip phone-only" id="camInfo"></p>
   </div>
   <div id="hud" title="Your smile. Flowers bloom when it passes the white line - drag the line to change how big a smile it takes">
     <div id="meterWrap" role="slider" tabindex="0" aria-label="Smile needed to bloom" aria-orientation="vertical"
@@ -2504,6 +2505,8 @@ $("photoBtn").onclick = photo;
 $("timerBtn").onclick = cycleTimer;
 
 function toggleHelp(open = !$("help").classList.contains("open")) {
+  // (phones) which camera picture the browser is giving - handy if the view ever looks too zoomed
+  if (open && video.videoWidth) $("camInfo").textContent = `Camera picture: ${video.videoWidth} × ${video.videoHeight}`;
   $("help").classList.toggle("open", open);
   $("helpBtn").classList.toggle("on", open);
   $("helpBtn").setAttribute("aria-expanded", open);
