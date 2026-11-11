@@ -543,11 +543,20 @@ $("closeWin").onclick = closeCamera;
 $("start").onclick = async () => {
   $("intro").style.display = "none";
   try {
+    // if a step takes a while, say what's going on instead of looking stuck
+    const later = (ms, msg) => setTimeout(() => setStatus(msg), ms);
     setStatus("Asking for camera…");
+    let hint = later(5000, "Waiting for the camera — allow it with the camera icon in the address bar");
     video.srcObject = await navigator.mediaDevices.getUserMedia({ video: cameraWanted(vertical), audio: false });
+    clearTimeout(hint);
     await video.play();
     setStatus("Loading face tracking…");
-    if (!faceLandmarker) await makeModels();   // loaded once; reopening the camera reuses them
+    hint = later(12000, "Still loading face tracking — the first time can take a little while");
+    if (!faceLandmarker) {                      // loaded once; reopening the camera reuses them
+      await Promise.race([makeModels(), new Promise((_, no) => setTimeout(() =>
+        no(new Error("face tracking didn't load — check your internet connection and reload")), 60000))]);
+    }
+    clearTimeout(hint);
     setStatus("Smile! 😊");
     setTimeout(() => setStatus(""), 2500);
     hud.style.display = "flex";
@@ -1989,18 +1998,23 @@ function loop(now) {
     // with the wall colour (fillTop) - flowers bloom over it like anywhere else, nothing is stretched.
     const fullW = Math.min(vw, vh * 3 / 4);
     W = Math.round(fullW); H = Math.round(fullW * 16 / 9);
-    let tw = fullW, tcx = vw / 2, twy = 0;
+    let tw = fullW, tcx = vw / 2, twy = 0, troom = 1;
     if (faceV) {
       tw = clamp(faceV.w / 0.30, fullW * 0.7, fullW);
       tcx = faceV.x;
       twy = faceV.y - 0.42 * tw * 16 / 9;          // your face sits a little above the middle of the frame
+      // Only zoom out (with wall above the picture) while your whole head is inside the camera
+      // picture. If your hair reaches the top of what the camera sees, the extra space above would
+      // show your head cut flat - so then it eases back to a phone crop that fills the frame.
+      troom = smooth(faceV.w * 0.1, faceV.w * 0.45, faceV.top);
     }
     selfie = selfie
-      ? { w: selfie.w + (tw - selfie.w) * 0.06, cx: selfie.cx + (tcx - selfie.cx) * 0.08, wy: selfie.wy + (twy - selfie.wy) * 0.08 }
-      : { w: tw, cx: tcx, wy: twy };
-    sw = selfie.w;
-    let shv = sw * 4 / 3;                          // how much real camera picture is used, top to bottom
-    if (shv > vh) { shv = vh; sw = shv * 3 / 4; }
+      ? { w: selfie.w + (tw - selfie.w) * 0.06, cx: selfie.cx + (tcx - selfie.cx) * 0.08, wy: selfie.wy + (twy - selfie.wy) * 0.08,
+          room: selfie.room + (troom - selfie.room) * 0.06 }
+      : { w: tw, cx: tcx, wy: twy, room: troom };
+    const aspect = 9 / 16 + (3 / 4 - 9 / 16) * selfie.room;   // 9:16 crop (no room) ... 3:4 + wall (room)
+    sw = Math.min(selfie.w, vh * aspect);
+    const shv = Math.min(vh, sw / aspect);          // how much real camera picture is used, top to bottom
     sh = sw * 16 / 9;                              // what the frame covers, including the bit above
     const extra = sh - shv;
     sx = clamp(selfie.cx - sw / 2, 0, vw - sw);
@@ -2030,7 +2044,8 @@ function loop(now) {
       const get = (n) => (cats.find((c) => c.categoryName === n) || { score: 0 }).score;
       smileRaw = (get("mouthSmileLeft") + get("mouthSmileRight")) / 2;   // only YOUR smile counts
       const lm = fr.faceLandmarks[mi];
-      faceV = { x: lm[1].x * vw, y: lm[1].y * vh, w: Math.abs(lm[454].x - lm[234].x) * vw };   // in camera pixels, for framing
+      { const fw = Math.abs(lm[454].x - lm[234].x) * vw;
+        faceV = { x: lm[1].x * vw, y: lm[1].y * vh, w: fw, top: lm[10].y * vh - 0.3 * fw }; }   // camera pixels, for framing (top ≈ top of your hair)
       const [fx, fy] = videoNormToScreen(lm[10].x, lm[10].y);
       const [lx] = videoNormToScreen(lm[234].x, lm[234].y);
       const [rx] = videoNormToScreen(lm[454].x, lm[454].y);
@@ -2150,6 +2165,7 @@ function loop(now) {
     ctx.drawImage(bgFillC, -W * 0.01, -H * 0.01, W * 1.02, H * 1.02);   // slightly oversized: clean frame edges
     ctx.filter = "none";
     ctx.globalAlpha = 1;
+    drawFillTop(ctx, W, H, sx, sw, sh);   // keep the wall above the picture clean (no smeared copies of the room)
   }
 
   // 2. wall of flowers + soft light (behind you)
