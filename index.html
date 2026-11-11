@@ -55,7 +55,17 @@
   @media (max-width:640px) { #intro { padding:0 86px 0 20px; } }   /* clear of the flower stickers on narrow screens */
   body.phone #intro { padding:0 20px 8vh; }
   body.phone #intro h1 { font-size:63px; }   /* phones: 1.5x the usual 42px heading */
-  body.phone.live #stage { padding-bottom:92px; }   /* camera picture centred in the space above the flowers */   /* phones: the flowers are along the bottom, so centre the heading */
+  @media (orientation: portrait) { body.phone.live #stage { padding-bottom:92px; } }   /* camera picture centred above the flowers */
+  /* phone turned sideways: the picture uses the full height, the flowers become a column at the right */
+  @media (orientation: landscape) {
+    html body.phone #stickers { flex-direction:column; overflow-x:hidden; overflow-y:auto; scroll-snap-type:y mandatory;
+      padding:10px 6px; gap:2px; }
+    html body.phone .sticker:first-child { margin-left:0; margin-top:auto; }
+    html body.phone .sticker:last-child { margin-right:0; margin-bottom:auto; }
+    body.phone #shoot { transform:translateX(-50%) scale(.82); transform-origin:bottom center; }
+    html body.phone #helpBtn { top:auto; bottom:14px; right:auto; left:14px; }   /* the flower column has the right edge */
+    html body.phone #help { top:auto; bottom:64px; right:auto; left:14px; max-height:calc(100vh - 80px); overflow:auto; }
+  }   /* phones: the flowers are along the bottom, so centre the heading */
   #start { pointer-events:auto; padding:8px 25px; font-size:20px; border:0; border-radius:999px;
     background:#fff; color:#24447a; cursor:pointer; font-weight:700; transition:transform .15s, box-shadow .15s; }
   #start:hover { transform:translateY(-1px); box-shadow:0 8px 24px rgba(20,45,90,.22); }
@@ -412,6 +422,14 @@ function present() {
 // vertical can glide: the size animates in CSS while the picture fills it (object-fit: cover).
 function sizeView(aspect) {
   if (PHONE) {   // like the camera app: the whole picture, as big as fits; the controls sit inside it
+    const side = innerWidth > innerHeight;   // turned sideways: flowers go in a column at the right
+    if (side) {
+      const a = view.width / view.height, maxH = innerHeight - 20, maxW = innerWidth - 170;
+      let h = maxH, w = h * a;
+      if (w > maxW) { w = maxW; h = w / a; }
+      view.style.width = Math.round(w) + "px"; view.style.height = Math.round(h) + "px";
+      return;
+    }
     const a = view.width / view.height, room = innerHeight - 118;   // leave room below for the flowers
     // as tall as the space allows (up to ~15% taller than the picture's own shape - the sides are
     // trimmed a little to fit, like the camera app does)
@@ -427,6 +445,7 @@ function sizeView(aspect) {
   view.style.width = Math.round(w) + "px"; view.style.height = Math.round(h) + "px";
 }
 addEventListener("resize", () => sizeView());
+addEventListener("orientationchange", () => setTimeout(() => { sizeView(); placeHud(); }, 250));   // phones: re-lay out after turning
 sizeView();
 const statusEl = $("status"), hud = $("hud"), meterFill = $("meterFill"), meterMark = $("meterMark");
 const sens = $("sens");
@@ -1698,7 +1717,7 @@ function chooseFlower(key) {
   document.querySelectorAll(".sticker").forEach((b, i) => {
     const on = Object.keys(SETS)[i] === key;
     b.classList.toggle("on", on);
-    if (on && PHONE) b.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });   // carousel: centre the pick
+    if (on && PHONE) b.scrollIntoView({ behavior: "smooth", inline: "center", block: "center" });   // carousel: centre the pick
   });
 }
 renderStickers();
@@ -2416,8 +2435,11 @@ function placeHud() {
   const bar = $("shoot");
   bar.style.left = r.left + r.width / 2 + "px";
   bar.style.bottom = Math.max(16, innerHeight - r.bottom + 16) + "px";
-  if (PHONE) {   // the flower carousel sits below the camera picture, near the bottom of the screen
-    Object.assign($("stickers").style, { left: "0px", right: "0px", bottom: "max(20px, env(safe-area-inset-bottom))" });
+  if (PHONE) {   // the flower carousel sits below the camera picture (sideways: a column at the right)
+    const side = innerWidth > innerHeight;
+    Object.assign($("stickers").style, side
+      ? { left: "auto", right: "max(8px, env(safe-area-inset-right))", top: "50%", bottom: "auto", transform: "translateY(-50%)", maxHeight: (innerHeight - 20) + "px" }
+      : { left: "0px", right: "0px", top: "auto", bottom: "max(20px, env(safe-area-inset-bottom))", transform: "none", maxHeight: "none" });
   }
   for (const el of [$("count"), $("flash")])   // countdown and flash cover exactly the video
     Object.assign(el.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
