@@ -327,30 +327,10 @@ const $ = (id) => document.getElementById(id);
 const video = $("v"), view = $("c"), viewCtx = view.getContext("2d");
 const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d");
 let viewLayout = { s: 1, x0: 0, y0: 0 };
-const edgeC = document.createElement("canvas"), edgeCtx = edgeC.getContext("2d");
-edgeC.width = 16; edgeC.height = 1;   // the top edge of the picture, averaged into 16 soft patches
 function present() {
   const W = canvas.width, H = canvas.height;
-  const VW = W, VH = vertical ? Math.round(W * 16 / 9) : H;
-  if (view.width !== VW || view.height !== VH) { view.width = VW; view.height = VH; sizeView(); }
-  if (!vertical) { viewCtx.drawImage(canvas, 0, 0); viewLayout = { s: 1, x0: 0, y0: 0 }; return; }
-  // Vertical: the phone-shaped 9:16 window shows the zoomed-out 3:4 picture, sitting at the bottom of
-  // the window so nothing is ever smeared below you (that streaked behind the buttons). The space at
-  // the top simply carries on the wall/ceiling above your head as smooth, even colour: each part of
-  // the picture's top edge is averaged into soft patches (no streaks), and right at the join it
-  // blends into the real edge so you can't see where the picture starts.
-  const y0 = VH - H;
-  edgeCtx.drawImage(canvas, 0, 0, W, Math.max(2, Math.round(H * 0.02)), 0, 0, edgeC.width, 1);
-  viewCtx.imageSmoothingEnabled = true; viewCtx.imageSmoothingQuality = "high";
-  viewCtx.drawImage(edgeC, 0, 0, edgeC.width, 1, 0, 0, W, y0 + 2);
-  const steps = 12, band = Math.max(1, Math.round(y0 * 0.35 / steps));
-  for (let i = 0; i < steps; i++) {
-    viewCtx.globalAlpha = (i + 1) / (steps + 1);
-    viewCtx.drawImage(canvas, 0, 0, W, 2, 0, y0 - (steps - i) * band, W, band + 1);
-  }
-  viewCtx.globalAlpha = 1;
-  viewCtx.drawImage(canvas, 0, y0);
-  viewLayout = { s: 1, x0: 0, y0 };
+  if (view.width !== W || view.height !== H) { view.width = W; view.height = H; sizeView(); }
+  viewCtx.drawImage(canvas, 0, 0);
 }
 // The window's on-screen size is set here (not left to the browser) so a switch between wide and
 // vertical can glide: the size animates in CSS while the picture fills it (object-fit: cover).
@@ -744,7 +724,25 @@ function onSegment(res) {
 
 // ---------- geometry (video -> mirrored screen) ----------
 let crop = { sx: 0, sy: 0, sw: 1, sh: 1, vw: 1, vh: 1 };
-let faceV = null, selfie = null;   // your face in camera pixels, and the smoothed selfie framing
+let faceV = null, selfie = null, fillTop = 0;
+const edgeC = document.createElement("canvas"), edgeCtx = edgeC.getContext("2d");
+edgeC.width = 16; edgeC.height = 1;   // the top edge of the camera picture, averaged into 16 soft patches
+// Fill the part of the frame above the camera picture with the wall/ceiling colour, smoothly: soft
+// even colour, blending into the real top edge so you can't see where the picture starts. Drawn in
+// the same mirrored space as the camera picture.
+function drawFillTop(c, W, H, sx, sw, sh) {
+  if (!fillTop) return;
+  const rowsV = Math.max(2, Math.round(sh * 0.015));
+  edgeCtx.drawImage(video, sx, 0, sw, rowsV, 0, 0, edgeC.width, 1);
+  c.imageSmoothingEnabled = true; c.imageSmoothingQuality = "high";
+  c.drawImage(edgeC, 0, 0, edgeC.width, 1, 0, 0, W, fillTop + 2);
+  const steps = 10, band = Math.max(1, Math.round(fillTop * 0.3 / steps));
+  for (let i = 0; i < steps; i++) {
+    c.globalAlpha = (i + 1) / (steps + 1);
+    c.drawImage(video, sx, 0, sw, 1, 0, fillTop - (steps - i) * band, W, band + 1);
+  }
+  c.globalAlpha = 1;
+}   // your face in camera pixels, and the smoothed selfie framing
 function videoNormToScreen(nx, ny) {
   const vx = nx * crop.vw, vy = ny * crop.vh;
   return [(1 - (vx - crop.sx) / crop.sw) * canvas.width, ((vy - crop.sy) / crop.sh) * canvas.height];
@@ -1985,24 +1983,30 @@ function loop(now) {
   // easing smoothly as you move. With no face found, it shows the middle of the picture.
   let sw = vw, sh = vh, sx = 0, sy = 0, W = vw, H = vh;
   if (vertical) {
-    // a 3:4 portrait slice: tall, but wide enough to show your shoulders and a bit of the room
+    // The whole 9:16 phone frame is part of the effect. The camera gives a zoomed-out 3:4 slice of
+    // you; the frame reaches a little above the top of that slice, and that bit of "room" is filled
+    // with the wall colour (fillTop) - flowers bloom over it like anywhere else, nothing is stretched.
     const fullW = Math.min(vw, vh * 3 / 4);
-    W = Math.round(fullW); H = Math.round(fullW * 4 / 3);
-    let tw = fullW, tcx = vw / 2, tcy = vh / 2;
+    W = Math.round(fullW); H = Math.round(fullW * 16 / 9);
+    let tw = fullW, tcx = vw / 2, twy = 0;
     if (faceV) {
       tw = clamp(faceV.w / 0.30, fullW * 0.7, fullW);
       tcx = faceV.x;
-      tcy = faceV.y + 0.12 * tw * 4 / 3;           // your face sits a little above the middle
+      twy = faceV.y - 0.42 * tw * 16 / 9;          // your face sits a little above the middle of the frame
     }
     selfie = selfie
-      ? { w: selfie.w + (tw - selfie.w) * 0.06, cx: selfie.cx + (tcx - selfie.cx) * 0.08, cy: selfie.cy + (tcy - selfie.cy) * 0.08 }
-      : { w: tw, cx: tcx, cy: tcy };
-    sw = selfie.w; sh = sw * 4 / 3;
-    if (sh > vh) { sh = vh; sw = sh * 3 / 4; }
+      ? { w: selfie.w + (tw - selfie.w) * 0.06, cx: selfie.cx + (tcx - selfie.cx) * 0.08, wy: selfie.wy + (twy - selfie.wy) * 0.08 }
+      : { w: tw, cx: tcx, wy: twy };
+    sw = selfie.w;
+    let shv = sw * 4 / 3;                          // how much real camera picture is used, top to bottom
+    if (shv > vh) { shv = vh; sw = shv * 3 / 4; }
+    sh = sw * 16 / 9;                              // what the frame covers, including the bit above
+    const extra = sh - shv;
     sx = clamp(selfie.cx - sw / 2, 0, vw - sw);
-    sy = clamp(selfie.cy - sh / 2, 0, vh - sh);
+    sy = clamp(selfie.wy + extra, 0, vh - shv) - extra;   // may start above the picture (negative)
   } else selfie = null;
   crop = { sx, sy, sw, sh, vw, vh };
+  fillTop = sy < 0 ? Math.ceil(-sy * H / sh) : 0;
   // size every layer to the video — checked against the person layer too, because the main canvas
   // can already match a 1280×720 camera on the first frame (that skipped this and left you invisible)
   if (canvas.width !== W || canvas.height !== H || personCanvas.width !== W || personCanvas.height !== H) {
@@ -2111,6 +2115,7 @@ function loop(now) {
   // You and the flowers are drawn on top afterwards, so you both stay sharp.
   ctx.setTransform(-1, 0, 0, 1, W, 0);
   ctx.drawImage(video, sx, sy, sw, sh, 0, 0, W, H);
+  drawFillTop(ctx, W, H, sx, sw, sh);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   if (glowAmt > 0.01 && haveMask) {
     // Portrait-mode style: (1) the room with you taken out, (2) that gap filled in with the
