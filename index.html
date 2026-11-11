@@ -725,24 +725,25 @@ function onSegment(res) {
 // ---------- geometry (video -> mirrored screen) ----------
 let crop = { sx: 0, sy: 0, sw: 1, sh: 1, vw: 1, vh: 1 };
 let faceV = null, selfie = null, fillTop = 0;
-const edgeC = document.createElement("canvas"), edgeCtx = edgeC.getContext("2d");
-edgeC.width = 16; edgeC.height = 1;   // the top edge of the camera picture, averaged into 16 soft patches
-// Fill the part of the frame above the camera picture with the wall/ceiling colour, smoothly: soft
-// even colour, blending into the real top edge so you can't see where the picture starts. Drawn in
-// the same mirrored space as the camera picture.
+const edgeC = document.createElement("canvas"), edgeCtx = edgeC.getContext("2d", { willReadFrequently: true });
+edgeC.width = 1; edgeC.height = 1;
+let wallRGB = null;   // one calm colour for the space above the camera picture, eased over time
+// Fill the part of the frame above the camera picture with ONE even colour - the average colour of
+// the wall along the top of the picture, eased slowly so a hand or hair passing the edge barely
+// shifts it. Nothing is stretched, so nothing can smear; the picture's top edge fades softly into it.
 function drawFillTop(c, W, H, sx, sw, sh) {
   if (!fillTop) return;
-  const rowsV = Math.max(2, Math.round(sh * 0.015));
-  edgeCtx.drawImage(video, sx, 0, sw, rowsV, 0, 0, edgeC.width, 1);
-  c.imageSmoothingEnabled = true; c.imageSmoothingQuality = "high";
-  c.drawImage(edgeC, 0, 0, edgeC.width, 1, 0, 0, W, fillTop + 2);
-  const steps = 10, band = Math.max(1, Math.round(fillTop * 0.3 / steps));
-  for (let i = 0; i < steps; i++) {
-    c.globalAlpha = (i + 1) / (steps + 1);
-    c.drawImage(video, sx, 0, sw, 1, 0, fillTop - (steps - i) * band, W, band + 1);
-  }
-  c.globalAlpha = 1;
-}   // your face in camera pixels, and the smoothed selfie framing
+  edgeCtx.drawImage(video, sx, 0, sw, Math.max(4, Math.round(sh * 0.03)), 0, 0, 1, 1);
+  const d = edgeCtx.getImageData(0, 0, 1, 1).data;
+  wallRGB = wallRGB ? wallRGB.map((v, i) => v + (d[i] - v) * 0.03) : [d[0], d[1], d[2]];
+  const col = `rgb(${wallRGB.map(Math.round).join(",")})`;
+  c.fillStyle = col;
+  c.fillRect(0, 0, W, fillTop + 1);
+  const fade = Math.round(H * 0.035), g = c.createLinearGradient(0, fillTop, 0, fillTop + fade);
+  g.addColorStop(0, col); g.addColorStop(1, `rgba(${wallRGB.map(Math.round).join(",")},0)`);
+  c.fillStyle = g;
+  c.fillRect(0, fillTop, W, fade);
+}
 function videoNormToScreen(nx, ny) {
   const vx = nx * crop.vw, vy = ny * crop.vh;
   return [(1 - (vx - crop.sx) / crop.sw) * canvas.width, ((vy - crop.sy) / crop.sh) * canvas.height];
