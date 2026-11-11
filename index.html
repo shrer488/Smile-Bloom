@@ -6,32 +6,59 @@
 <title>Smile Bloom</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Give+You+Glory&display=swap" rel="stylesheet" />
 <style>
   :root { --pink:#ff7eb6; --ink:#fff; --panel:rgba(20,10,20,.55); }
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; color:var(--ink);
-    background:#9fb08a url("meadow.webp") center / cover no-repeat;
+    background:#5f93c9 url("cow-hill.jpg") center / cover no-repeat;
     font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif; overflow:hidden; }
   #stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
   canvas { max-width:100vw; max-height:100vh; border-radius:14px; }
-  #c { visibility:hidden; }          /* no empty box before the camera starts */
-  body.live #c { visibility:visible; }
+  /* the video sits in a macOS-style window: light title bar, traffic lights, rounded corners, soft shadow */
+  #win { display:flex; flex-direction:column; border-radius:12px; overflow:hidden; visibility:hidden;
+    box-shadow:0 0 0 .5px rgba(0,0,0,.35), 0 24px 70px rgba(10,25,50,.38), 0 6px 18px rgba(10,25,50,.18); }
+  body.live #win { visibility:visible; }   /* no empty window before the camera starts */
+  #win .bar { position:relative; height:30px; flex:none; display:flex; align-items:center; padding:0 12px;
+    background:linear-gradient(#f5f5f5, #e9e9e9); border-bottom:1px solid rgba(0,0,0,.14); }
+  #win .lights { display:flex; gap:8px; }
+  #win .lights > * { width:12px; height:12px; border-radius:50%; box-shadow:inset 0 0 0 .5px rgba(0,0,0,.22); }
+  #win .lights > :nth-child(1) { background:#ff5f57; }
+  /* the red one closes the camera; like macOS, an × shows on it while you hover the buttons */
+  #closeWin { border:0; padding:0; cursor:pointer; position:relative; }
+  #closeWin::after { content:"×"; position:absolute; inset:0; display:grid; place-items:center; font:700 11px/1 system-ui;
+    color:rgba(80,0,0,.75); opacity:0; transition:opacity .12s; }
+  #win .lights:hover #closeWin::after, #closeWin:focus-visible::after { opacity:1; }
+  #win .lights > :nth-child(2) { background:#febc2e; }
+  #win .lights > :nth-child(3) { background:#28c840; }
+  #win .title { position:absolute; left:50%; transform:translateX(-50%); font:600 13px -apple-system, "SF Pro Text", system-ui, sans-serif;
+    color:#4a4a4a; white-space:nowrap; }
+  #c { display:block; border-radius:0; max-width:none; max-height:none; }
   video { display:none; }
   /* swaying grass: a WebGL layer drawn over the static photo; if WebGL is missing, the photo stays */
   #grass { position:fixed; inset:0; width:100vw; height:100vh; max-width:none; max-height:none;
     border-radius:0; box-shadow:none; pointer-events:none; }
+  /* film grain over the background photo (not the video): hides the photo's low resolution */
+  #grain { position:fixed; inset:0; pointer-events:none; opacity:.42; mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='1.6' intercept='-.3'/%3E%3CfeFuncG type='linear' slope='1.6' intercept='-.3'/%3E%3CfeFuncB type='linear' slope='1.6' intercept='-.3'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size:180px 180px; }
+
   /* first screen: a heading in the middle of the page with the Start camera button under it */
+  /* (layout from the Figma design: one word per line, the group sitting a little above centre, in the sky) */
   #intro { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
-    gap:28px; padding:0 24px; text-align:center; pointer-events:none; }
-  #intro h1 { margin:0; max-width:11em; font-family:"Inter Tight", "Helvetica Neue", Arial, sans-serif;
-    font-size:clamp(40px, 6.4vw, 92px); line-height:1.02; font-weight:300; letter-spacing:-.035em;
-    color:#fff; text-wrap:balance; text-shadow:0 2px 10px rgba(20,30,40,.22), 0 10px 50px rgba(20,30,40,.3); }
+    gap:28px; padding:0 24px 17vh; text-align:center; pointer-events:none; }
+  #intro h1 { margin:0; max-width:4.3em; font-family:"Give You Glory", "Comic Sans MS", cursive;
+    font-size:clamp(42px, 4.1vw, 64px); line-height:.78; font-weight:400; font-style:normal; letter-spacing:0;
+    color:#fff; }
   #intro h1 em { font-style:normal; }
   @media (max-width:640px) { #intro { padding:0 86px 0 20px; } }   /* clear of the flower stickers on phones */
-  #start { pointer-events:auto; padding:18px 30px; font-size:20px; border:0; border-radius:999px;
-    background:linear-gradient(135deg,#ff9ac8,#ff6fa5); color:#fff; cursor:pointer; font-weight:700;
-    box-shadow:0 8px 30px rgba(255,111,165,.45); }
+  #start { pointer-events:auto; padding:8px 25px; font-size:20px; border:0; border-radius:999px;
+    background:#fff; color:#24447a; cursor:pointer; font-weight:700; transition:transform .15s, box-shadow .15s; }
+  #start:hover { transform:translateY(-1px); box-shadow:0 8px 24px rgba(20,45,90,.22); }
+  /* thin white border around the whole page, like a photo print (from the Figma design) */
+  /* (the inside edge has rounded corners: a rounded window cut out of a white frame) */
+  body::after { content:""; position:fixed; inset:6px; border-radius:22px; box-shadow:0 0 0 40px #fff;
+    pointer-events:none; z-index:50; }
   #status { position:absolute; top:16px; left:50%; transform:translateX(-50%); background:var(--panel);
     padding:8px 16px; border-radius:999px; font-size:14px; backdrop-filter:blur(8px); }
   /* smile meter, top left under the frame-shape button. The white line is how big a smile it
@@ -79,12 +106,12 @@
   #count.show { display:grid; }
   #count span { animation:pop 1s ease-out both; }
   @keyframes pop { 0% { transform:scale(1.5); opacity:0; } 20% { transform:scale(1); opacity:1; } 80% { opacity:1; } 100% { opacity:.2; transform:scale(.9); } }
-  #flash { position:absolute; background:#fff; opacity:0; pointer-events:none; z-index:7; border-radius:14px; }
+  #flash { position:absolute; background:#fff; opacity:0; pointer-events:none; z-index:7; border-radius:0 0 12px 12px; }
   #flash.go { animation:flash .45s ease-out; }
   @keyframes flash { 0% { opacity:.85; } 100% { opacity:0; } }
   /* flower picker: die-cut stickers of each flower, top right */
-  #stickers { position:absolute; top:16px; right:16px; display:flex; flex-direction:column; gap:6px; align-items:center; z-index:5; }
-  .sticker { position:relative; width:62px; height:62px; border:0; padding:0; background:none; cursor:pointer;
+  #stickers { position:absolute; top:26px; right:26px; display:flex; flex-direction:column; gap:6px; align-items:center; z-index:5; }
+  .sticker { position:relative; width:50px; height:50px; border:0; padding:0; background:none; cursor:pointer;
     transform:rotate(var(--rot)) scale(.86); transition:transform .25s cubic-bezier(.3,1.6,.5,1), opacity .2s; opacity:.72; }
   .sticker img { width:100%; height:100%; object-fit:contain; pointer-events:none;
     filter: drop-shadow(2.5px 0 0 #fff) drop-shadow(-2.5px 0 0 #fff) drop-shadow(0 2.5px 0 #fff) drop-shadow(0 -2.5px 0 #fff)
@@ -96,6 +123,11 @@
     box-shadow:0 2px 6px rgba(0,0,0,.25); opacity:0; transition:opacity .2s; }
   .sticker.on span, .sticker:hover span { opacity:1; }
   .sticker.loading { opacity:.35; cursor:wait; }
+  /* before the camera is on, no sticker looks picked: all the same size, no label (except on hover) */
+  body:not(.live) .sticker.on { transform:rotate(var(--rot)) scale(.86); opacity:.72; }
+  body:not(.live) .sticker.on:hover { transform:rotate(0deg) scale(.95); opacity:1; }
+  body:not(.live) .sticker.on span { opacity:0; }
+  body:not(.live) .sticker.on:hover span { opacity:1; }
   /* aspect ratio: top left, only once the camera is on. The rounded frame is the video's shape
      (wide, or tall when vertical) and swings round between the two. */
   #vert { position:absolute; left:16px; top:16px; z-index:6; width:48px; height:48px; border-radius:50%;
@@ -109,7 +141,6 @@
     stroke-linecap:round; stroke-linejoin:round; overflow:visible; }
   #vert .frame { transform-origin:16px 16px; transition:transform .35s cubic-bezier(.3,1.4,.5,1); }
   #vert.on .frame { transform:rotate(90deg); }
-  #vert .arrow { stroke-width:1.8; opacity:.85; }
   /* keyboard shortcuts: "?" button bottom left, panel opens above it */
   #helpBtn { position:absolute; left:16px; bottom:16px; z-index:6; width:40px; height:40px; border-radius:50%;
     border:1px solid rgba(255,255,255,.22); background:var(--panel); color:#fff; font-family:inherit;
@@ -198,7 +229,7 @@
   const uT = gl.getUniformLocation(prog, "t"), uCover = gl.getUniformLocation(prog, "cover");
 
   const img = new Image();
-  img.src = "meadow.webp";
+  img.src = "cow-hill.jpg";
   cv.style.opacity = 0;
   img.decode().then(() => {
     gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
@@ -229,11 +260,15 @@
   }).catch(() => cv.remove());
 })();
 </script>
+<div id="grain" aria-hidden="true"></div>
 <div id="stage">
-  <canvas id="c" width="1280" height="720"></canvas>
+  <div id="win">
+    <div class="bar"><span class="lights"><button id="closeWin" title="Close camera" aria-label="Close camera"></button><i aria-hidden="true"></i><i aria-hidden="true"></i></span><span class="title" aria-hidden="true">Smile Bloom</span></div>
+    <canvas id="c" width="1280" height="720"></canvas>
+  </div>
   <div id="intro">
     <h1>Your smile makes flowers <em>bloom</em></h1>
-    <button id="start">🌸 Start camera</button>
+    <button id="start">Start camera</button>
   </div>
   <div id="stickers" aria-label="Choose a flower"></div>
   <div id="status" style="display:none"></div>
@@ -241,7 +276,6 @@
   <button id="vert" title="Switch to vertical video (V)" aria-label="Switch to vertical video" aria-pressed="false">
     <svg viewBox="0 0 32 32" aria-hidden="true">
       <rect class="frame" x="4" y="9" width="24" height="14" rx="3" />
-      <path class="arrow" d="M23.5 5.5a10 10 0 0 1 4 4.5m0 0-.3-3.2m.3 3.2-3.1-.6" />
     </svg>
   </button>
   <button id="helpBtn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" aria-expanded="false" aria-controls="help">?</button>
@@ -289,7 +323,34 @@ import { FilesetResolver, FaceLandmarker, ImageSegmenter, HandLandmarker }
   from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
 const $ = (id) => document.getElementById(id);
-const video = $("v"), canvas = $("c"), ctx = canvas.getContext("2d");
+// The effect is drawn on an off-screen canvas (`canvas`); `view` is what you see, record and photograph.
+const video = $("v"), view = $("c"), viewCtx = view.getContext("2d");
+const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d");
+let viewLayout = { s: 1, x0: 0, y0: 0 };
+function present() {
+  const W = canvas.width, H = canvas.height;
+  const VW = W, VH = vertical ? Math.round(W * 16 / 9) : H;
+  if (view.width !== VW || view.height !== VH) { view.width = VW; view.height = VH; sizeView(); }
+  if (!vertical) { viewCtx.drawImage(canvas, 0, 0); return; }
+  // Vertical: the phone-shaped 9:16 window shows the zoomed-out 3:4 picture across the middle. The
+  // thin strips above and below simply continue the picture's own top and bottom edge (the ceiling
+  // carries on up, your top carries on down) - no blur, so it reads as one picture.
+  const y0 = Math.round((VH - H) / 2);
+  viewCtx.drawImage(canvas, 0, 0, W, 2, 0, 0, W, y0 + 1);                 // top edge, stretched up
+  viewCtx.drawImage(canvas, 0, H - 2, W, 2, 0, y0 + H - 1, W, VH - y0 - H + 1);   // bottom edge, stretched down
+  viewCtx.drawImage(canvas, 0, y0);
+}
+// The window's on-screen size is set here (not left to the browser) so a switch between wide and
+// vertical can glide: the size animates in CSS while the picture fills it (object-fit: cover).
+function sizeView(aspect) {
+  const maxW = Math.max(200, innerWidth - 200), maxH = Math.max(200, innerHeight - 150);
+  const a = aspect || view.width / view.height;
+  let w = maxW, h = w / a;
+  if (h > maxH) { h = maxH; w = h * a; }
+  view.style.width = Math.round(w) + "px"; view.style.height = Math.round(h) + "px";
+}
+addEventListener("resize", () => sizeView());
+sizeView();
 const statusEl = $("status"), hud = $("hud"), meterFill = $("meterFill"), meterMark = $("meterMark");
 const sens = $("sens");
 
@@ -310,9 +371,10 @@ let prevPalms = [];    // last palm positions, for swipe velocity
 let handFrame = 0;
 let handShapes = [], handSeenAt = -1;   // your hands' 21 points (video-normalized), for the cut-out
 let pointer = null;    // mouse / touch acting as a hand
-canvas.addEventListener("pointermove", (e) => {
-  const r = canvas.getBoundingClientRect();
-  const x = (e.clientX - r.left) * canvas.width / r.width, y = (e.clientY - r.top) * canvas.height / r.height;
+view.addEventListener("pointermove", (e) => {
+  const r = view.getBoundingClientRect();
+  const x = ((e.clientX - r.left) * view.width / r.width - viewLayout.x0) / viewLayout.s,
+        y = ((e.clientY - r.top) * view.height / r.height - viewLayout.y0) / viewLayout.s;
   const now = performance.now();
   if (pointer && now - pointer.t < 200) {
     const el = Math.max(8, now - pointer.t) / 1000;
@@ -470,21 +532,36 @@ async function makeModels() {
   try { await make("GPU"); } catch (e) { console.warn("GPU failed, using CPU", e); await make("CPU"); }
 }
 
+let running = false;
+// the window's red button: stop the camera and go back to the start screen
+function closeCamera() {
+  if (recorder) recorder.stop();          // a recording in progress is saved, not lost
+  cancelCountdown();
+  running = false;
+  const s = video.srcObject;
+  if (s) s.getTracks().forEach((t) => t.stop());   // turns the camera (and its light) off
+  video.srcObject = null;
+  hud.style.display = "none";
+  document.body.classList.remove("live");
+  setStatus("");
+  $("intro").style.display = "flex";
+}
+$("closeWin").onclick = closeCamera;
+
 $("start").onclick = async () => {
   $("intro").style.display = "none";
   try {
     setStatus("Asking for camera…");
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: false });
-    video.srcObject = stream;
+    video.srcObject = await navigator.mediaDevices.getUserMedia({ video: cameraWanted(vertical), audio: false });
     await video.play();
     setStatus("Loading face tracking…");
-    await makeModels();
+    if (!faceLandmarker) await makeModels();   // loaded once; reopening the camera reuses them
     setStatus("Smile! 😊");
     setTimeout(() => setStatus(""), 2500);
     hud.style.display = "flex";
     document.body.classList.add("live");
     placeHud();   // only now show the video frame, so there's no empty box before
+    running = true;
     requestAnimationFrame(loop);
   } catch (e) {
     console.error(e);
@@ -655,6 +732,7 @@ function onSegment(res) {
 
 // ---------- geometry (video -> mirrored screen) ----------
 let crop = { sx: 0, sy: 0, sw: 1, sh: 1, vw: 1, vh: 1 };
+let faceV = null, selfie = null;   // your face in camera pixels, and the smoothed selfie framing
 function videoNormToScreen(nx, ny) {
   const vx = nx * crop.vw, vy = ny * crop.vh;
   return [(1 - (vx - crop.sx) / crop.sw) * canvas.width, ((vy - crop.sy) / crop.sh) * canvas.height];
@@ -1884,16 +1962,35 @@ function drawGlow(W, H, gx, gy, strength, radiusMul) {
 // ---------- main loop ----------
 let lastT = performance.now();
 function loop(now) {
+  if (!running) return;                    // the camera window was closed
   const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
   const t = now / 1000;
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw) { requestAnimationFrame(loop); return; }
 
-  let sw = vw, sh = vh;
-  if (vertical) sw = Math.min(vw, vh * 9 / 16);
-  const sx = (vw - sw) / 2, sy = 0;
+  // Vertical mode frames you like a phone selfie: the shot follows your face and is zoomed so your
+  // face and upper body fill the frame (face about 30% of the width, eyes a little above the middle),
+  // easing smoothly as you move. With no face found, it shows the middle of the picture.
+  let sw = vw, sh = vh, sx = 0, sy = 0, W = vw, H = vh;
+  if (vertical) {
+    // a 3:4 portrait slice: tall, but wide enough to show your shoulders and a bit of the room
+    const fullW = Math.min(vw, vh * 3 / 4);
+    W = Math.round(fullW); H = Math.round(fullW * 4 / 3);
+    let tw = fullW, tcx = vw / 2, tcy = vh / 2;
+    if (faceV) {
+      tw = clamp(faceV.w / 0.30, fullW * 0.7, fullW);
+      tcx = faceV.x;
+      tcy = faceV.y + 0.12 * tw * 4 / 3;           // your face sits a little above the middle
+    }
+    selfie = selfie
+      ? { w: selfie.w + (tw - selfie.w) * 0.06, cx: selfie.cx + (tcx - selfie.cx) * 0.08, cy: selfie.cy + (tcy - selfie.cy) * 0.08 }
+      : { w: tw, cx: tcx, cy: tcy };
+    sw = selfie.w; sh = sw * 4 / 3;
+    if (sh > vh) { sh = vh; sw = sh * 3 / 4; }
+    sx = clamp(selfie.cx - sw / 2, 0, vw - sw);
+    sy = clamp(selfie.cy - sh / 2, 0, vh - sh);
+  } else selfie = null;
   crop = { sx, sy, sw, sh, vw, vh };
-  const W = Math.round(sw), H = Math.round(sh);
   // size every layer to the video — checked against the person layer too, because the main canvas
   // can already match a 1280×720 camera on the first frame (that skipped this and left you invisible)
   if (canvas.width !== W || canvas.height !== H || personCanvas.width !== W || personCanvas.height !== H) {
@@ -1916,6 +2013,7 @@ function loop(now) {
       const get = (n) => (cats.find((c) => c.categoryName === n) || { score: 0 }).score;
       smileRaw = (get("mouthSmileLeft") + get("mouthSmileRight")) / 2;   // only YOUR smile counts
       const lm = fr.faceLandmarks[mi];
+      faceV = { x: lm[1].x * vw, y: lm[1].y * vh, w: Math.abs(lm[454].x - lm[234].x) * vw };   // in camera pixels, for framing
       const [fx, fy] = videoNormToScreen(lm[10].x, lm[10].y);
       const [lx] = videoNormToScreen(lm[234].x, lm[234].y);
       const [rx] = videoNormToScreen(lm[454].x, lm[454].y);
@@ -2007,13 +2105,13 @@ function loop(now) {
     // surrounding room colours so nothing dark smears out from behind you, (3) one smooth, subtle
     // blur at full strength — no half-blend, so no ghosting — and (4) you drawn sharp on top later.
     const bw = bgBlurC.width, bh = bgBlurC.height;
-    const mx0 = sx * maskW / vw, msw0 = sw * maskW / vw;
+    const mx0 = sx * maskW / vw, msw0 = sw * maskW / vw, my0 = sy * maskH / vh, msh0 = sh * maskH / vh;
     bbctx.globalCompositeOperation = "source-over";
     bbctx.clearRect(0, 0, bw, bh);
     bbctx.setTransform(-1, 0, 0, 1, bw, 0);
     bbctx.drawImage(video, sx, sy, sw, sh, 0, 0, bw, bh);
     bbctx.globalCompositeOperation = "destination-out";
-    bbctx.drawImage(maskCanvas, mx0, 0, msw0, maskH, 0, 0, bw, bh);   // exactly your shape — no margin to peek out
+    bbctx.drawImage(maskCanvas, mx0, my0, msw0, msh0, 0, 0, bw, bh);   // exactly your shape — no margin to peek out
     bbctx.globalCompositeOperation = "source-over";
     bbctx.setTransform(1, 0, 0, 1, 0, 0);
     // fill the gap with the colours right next to it: smear the room inward from every direction,
@@ -2044,7 +2142,7 @@ function loop(now) {
   // the aura goes on BEFORE the flowers, so it glows from behind you and the flowers stay crisp
   // on top of it (drawn after them, it washed a white haze over every flower near your outline)
   if (haveMask) {
-    const mx = sx * maskW / vw, msw = sw * maskW / vw;
+    const mx = sx * maskW / vw, msw = sw * maskW / vw, my = sy * maskH / vh, msh = sh * maskH / vh;
     const gw = glowC.width, gh = glowC.height;
     // ethereal moonlight aura that hugs your head, hair and shoulders
     if (glowAmt > 0.01) {
@@ -2053,7 +2151,7 @@ function loop(now) {
         gctx.clearRect(0, 0, gw, gh);
         gctx.filter = `blur(${blurPx}px)`;
         gctx.setTransform(-1, 0, 0, 1, gw, 0);
-        gctx.drawImage(maskCanvas, mx, 0, msw, maskH, 0, 0, gw, gh);
+        gctx.drawImage(maskCanvas, mx, my, msw, msh, 0, 0, gw, gh);
         gctx.setTransform(1, 0, 0, 1, 0, 0);
         gctx.filter = "none";
         gctx.globalCompositeOperation = "source-in";
@@ -2089,7 +2187,7 @@ function loop(now) {
   // 3. you, cut out and placed on top — you fade into color evenly, all at once
   const personColor = 1; // always in full color
   if (haveMask) {
-    const mx = sx * maskW / vw, msw = sw * maskW / vw;
+    const mx = sx * maskW / vw, msw = sw * maskW / vw, my = sy * maskH / vh, msh = sh * maskH / vh;
     const gw = glowC.width, gh = glowC.height;
 
     pctx.globalCompositeOperation = "source-over";
@@ -2098,7 +2196,7 @@ function loop(now) {
     pctx.drawImage(video, sx, sy, sw, sh, 0, 0, W, H);
     pctx.globalCompositeOperation = "destination-in";
     pctx.filter = "blur(2px)";
-    pctx.drawImage(maskCanvas, mx, 0, msw, maskH, 0, 0, W, H);
+    pctx.drawImage(maskCanvas, mx, my, msw, msh, 0, 0, W, H);
     pctx.filter = "none";
     pctx.setTransform(1, 0, 0, 1, 0, 0);
     const pc = personColor;
@@ -2155,7 +2253,7 @@ function loop(now) {
   }
 
   if (showDebug) {
-    ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(8, 8, 240, 66);
+    ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(8, 8, 300, 120);
     ctx.fillStyle = "#fff"; ctx.font = "14px monospace";
     ctx.fillText(`smile ${smile.toFixed(2)} thr ${thr.toFixed(2)}`, 16, 28);
     ctx.fillText(`bloom ${prog.toFixed(2)} flowers ${sprouts.length}`, 16, 46);
@@ -2166,7 +2264,13 @@ function loop(now) {
     ctx.strokeStyle = "#0ff";
     for (const h of handPts) { ctx.beginPath(); ctx.arc(h.x, h.y, h.r, 0, Math.PI * 2); ctx.stroke(); }
     ctx.fillStyle = "#fff"; ctx.fillText(`hands ${handLandmarker ? "on" : "off"} pts ${handPts.length}`, 16, 82);
+    // what the camera is giving, and the biggest picture it says it can give (for the vertical mode)
+    const tr = video.srcObject && video.srcObject.getVideoTracks()[0];
+    const cap = tr && tr.getCapabilities ? tr.getCapabilities() : {};
+    ctx.fillText(`camera ${video.videoWidth}x${video.videoHeight}`, 16, 100);
+    ctx.fillText(`max ${cap.width ? cap.width.max : "?"}x${cap.height ? cap.height.max : "?"} ${tr ? tr.label.slice(0, 22) : ""}`, 16, 118);
   }
+  present();
   requestAnimationFrame(loop);
 }
 
@@ -2174,7 +2278,7 @@ function loop(now) {
 // Keep the bottom bar inside the video frame: centred on it and just above its bottom edge,
 // following it when the window resizes or the frame switches between wide and vertical.
 function placeHud() {
-  const r = canvas.getBoundingClientRect();
+  const r = view.getBoundingClientRect();
   if (!r.width) return;
   const bar = $("shoot");
   bar.style.left = r.left + r.width / 2 + "px";
@@ -2182,7 +2286,7 @@ function placeHud() {
   for (const el of [$("count"), $("flash")])   // countdown and flash cover exactly the video
     Object.assign(el.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
 }
-new ResizeObserver(placeHud).observe(canvas);
+new ResizeObserver(placeHud).observe(view);
 
 // Drag the white line on the smile meter (or use the arrow keys on it) to set how big a smile it takes.
 const meterWrap = $("meterWrap");
@@ -2207,11 +2311,37 @@ meterWrap.addEventListener("keydown", (e) => {
 setThreshold(+sens.value);
 addEventListener("resize", placeHud);
 
+// What to ask the camera for, like FaceTime does. Wide: normal 16:9 HD. Vertical: the camera's taller
+// 4:3 picture (as high as it goes), so the tall frame keeps more of you above and below. Cameras
+// without a taller mode just give their usual picture.
+function cameraWanted(tall) {
+  return tall
+    ? { aspectRatio: { ideal: 4 / 3 }, width: { ideal: 1920 }, height: { ideal: 1440 }, facingMode: "user" }
+    : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" };
+}
+let cameraSwap = Promise.resolve();
+function switchCameraMode(tall) {
+  if (!running) return;
+  cameraSwap = cameraSwap.then(async () => {
+    try {
+      const next = await navigator.mediaDevices.getUserMedia({ video: cameraWanted(tall), audio: false });
+      const old = video.srcObject;
+      video.srcObject = next;
+      await video.play();
+      if (old) old.getTracks().forEach((t) => t.stop());
+    } catch (e) { console.warn("Could not switch camera mode", e); }
+  });
+}
+
 function toggleVertical() {
   vertical = !vertical;
-  const b = $("vert"), label = vertical ? "Switch to wide video" : "Switch to vertical video";
-  b.classList.toggle("on", vertical);
-  b.setAttribute("aria-pressed", vertical);
+  switchCameraMode(vertical);   // vertical asks the camera for its taller picture, wide for the normal one
+  setVertButton(vertical);
+}
+function setVertButton(on) {
+  const b = $("vert"), label = on ? "Switch to wide video" : "Switch to vertical video";
+  b.classList.toggle("on", on);
+  b.setAttribute("aria-pressed", on);
   b.setAttribute("aria-label", label);
   b.title = label + " (V)";
 }
@@ -2253,7 +2383,7 @@ function withTimer(action) {
 }
 
 function takePhoto() {
-  canvas.toBlob((b) => b && saveBlob(b, "png"), "image/png");
+  view.toBlob((b) => b && saveBlob(b, "png"), "image/png");
   const f = $("flash"); placeHud();
   f.classList.remove("go"); void f.offsetWidth; f.classList.add("go");
 }
@@ -2263,7 +2393,7 @@ function startRecording() {
   const btn = $("rec"), timeEl = $("recTime");
   const types = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm"];
   const mimeType = types.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
-  const stream = canvas.captureStream(30);
+  const stream = view.captureStream(30);
   recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 10_000_000 });
   chunks = [];
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
