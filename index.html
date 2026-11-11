@@ -1016,6 +1016,74 @@ function applyMatte(P, al, wall) {
   }
   P.c.putImageData(P.id, 0, 0);
 }
+// ---- clean cut-out edge (used for the gardenia photos) ----
+// The colour matte leaves a ragged outline on white petals: shaded petal edges drop out as notches,
+// thin slivers of neighbouring petals hang on, and the edge is grey with background. This turns the
+// matte into a solid shape with a smooth outline, then refills edge pixels with petal colour.
+function boxSum(src, w, h, r, horiz) {           // sum over a (2r+1) window along rows or columns
+  const out = new Float32Array(src.length), n = horiz ? w : h, lines = horiz ? h : w;
+  for (let L = 0; L < lines; L++) {
+    const at = (i) => horiz ? L * w + i : i * w + L;
+    let acc = 0;
+    for (let i = -r; i <= r; i++) if (i >= 0 && i < n) acc += src[at(i)];
+    for (let i = 0; i < n; i++) {
+      out[at(i)] = acc;
+      const add = i + r + 1, sub = i - r;
+      if (add < n) acc += src[at(add)];
+      if (sub >= 0) acc -= src[at(sub)];
+    }
+  }
+  return out;
+}
+function grow(m, w, h, r, dilate) {              // square dilate / erode of a 0/1 mask
+  const full = (2 * r + 1);
+  const a = boxSum(m, w, h, r, true).map((v) => dilate ? (v > 0 ? 1 : 0) : (v >= full ? 1 : 0));
+  return boxSum(a, w, h, r, false).map((v) => dilate ? (v > 0 ? 1 : 0) : (v >= full ? 1 : 0));
+}
+function blurMask(m, w, h, r) {
+  let a = m;
+  for (let i = 0; i < 2; i++) { const k = (2 * r + 1) ** 2;
+    a = boxSum(boxSum(a, w, h, r, true), w, h, r, false).map((v) => v / k); }
+  return a;
+}
+function cleanCutout(P, al) {
+  const w = P.w, h = P.h, N = w * h, d = P.id.data, S = Math.max(w, h);
+  let m = new Float32Array(N); for (let p = 0; p < N; p++) m[p] = al[p] > 0.5 ? 1 : 0;
+  const rc = Math.max(2, Math.round(S * 0.012)), ro = Math.max(2, Math.round(S * 0.018));
+  m = grow(grow(m, w, h, rc, true), w, h, rc, false);     // close: fill notches and pinholes in the edge
+  m = grow(grow(m, w, h, ro, false), w, h, ro, true);     // open: drop thin slivers and loose bits
+  keepBiggest(m, w, h, 0.5);                              // one flower, nothing floating
+  // smooth outline: blur the shape, then a soft threshold gives an even, anti-aliased edge
+  const f = blurMask(m, w, h, Math.max(1, Math.round(S * 0.004)));
+  const na = f.map((v) => smooth(0.3, 0.7, v));
+  // edge colour: anything not clearly petal in the photo is refilled from the petal next to it
+  const known = new Uint8Array(N); let front = [];
+  for (let p = 0; p < N; p++) if (al[p] >= 0.85 && m[p]) { known[p] = 1; front.push(p); }
+  for (let pass = 0; pass < rc + ro + 6 && front.length; pass++) {
+    const next = [];
+    for (const q of front) { const x = q % w, y = (q / w) | 0;
+      for (const r of [x > 0 ? q - 1 : -1, x < w - 1 ? q + 1 : -1, y > 0 ? q - w : -1, y < h - 1 ? q + w : -1]) {
+        if (r < 0 || known[r] || na[r] <= 0) continue;
+        known[r] = 2; next.push(r);
+      } }
+    for (const r of next) {                                // average of the petal pixels around it
+      const x = r % w, y = (r / w) | 0; let cr = 0, cg = 0, cb = 0, n = 0;
+      for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+        const xx = x + i, yy = y + j; if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+        const q = yy * w + xx; if (known[q] !== 1) continue; const k = q * 4;
+        cr += d[k]; cg += d[k + 1]; cb += d[k + 2]; n++; }
+      if (n) { const k = r * 4; d[k] = cr / n; d[k + 1] = cg / n; d[k + 2] = cb / n; }
+    }
+    for (const r of next) known[r] = 1;
+    front = next;
+  }
+  for (let p = 0, k = 3; p < N; p++, k += 4) { al[p] = na[p]; d[k] = Math.round(na[p] * 255); }
+  P.c.putImageData(P.id, 0, 0);
+  let minx = w, miny = h, maxx = 0, maxy = 0;
+  for (let p = 0; p < N; p++) if (al[p] > 0.04) { const x = p % w, y = (p / w) | 0;
+    if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y; }
+  return { minx, miny, maxx, maxy };
+}
 function wallColour(d, w, h) {
   let r = 0, g = 0, b = 0;
   for (const [x, y] of [[3, 3], [w - 4, 3], [3, h - 4], [w - 4, h - 4]]) { const k = (y * w + x) * 4; r += d[k]; g += d[k + 1]; b += d[k + 2]; }
@@ -1039,7 +1107,7 @@ function marigoldSprite(img, crop, R, matte = orangeMatte, grade = MARIGOLD_GRAD
     al[p] *= smooth(1.03, 0.98, Math.hypot(ex, ey));
   }
   if (oval) for (let p = 0; p < N; p++) if (al[p] < 0.22) al[p] = 0;   // no faint haze of background
-  const bb = keepBiggest(al, P.w, P.h);
+  let bb = keepBiggest(al, P.w, P.h);
   if (fillHoles) {
     // pale, almost-white petal centres read as "wall" to the colour matte: anything the wall
     // can't reach from the edge of the picture is part of the flower, so make it solid
@@ -1051,7 +1119,8 @@ function marigoldSprite(img, crop, R, matte = orangeMatte, grade = MARIGOLD_GRAD
       if (x > 0) push(q - 1); if (x < w - 1) push(q + 1); if (y > 0) push(q - w); if (y < h - 1) push(q + w); }
     for (let y = bb.miny; y <= bb.maxy; y++) for (let x = bb.minx; x <= bb.maxx; x++) { const q = y * w + x; if (!out[q]) al[q] = 1; }
   }
-  applyMatte(P, al, wall);
+  if (oval) bb = cleanCutout(P, al);   // gardenia photos: solid flower, smooth outline, no grey fringe
+  else applyMatte(P, al, wall);
   const bw = bb.maxx - bb.minx + 1, bh = bb.maxy - bb.miny + 1;
   // the stem joins at the middle of the bottom edge of the head
   let sx = 0, n = 0;
@@ -1385,10 +1454,9 @@ async function loadGardenias() {
   // shading to cut cleanly, so only its glossy leaves are used)
   S.blooms.push(
     ...cut(0, [0.56, 0.475, 0.391, 0.408], 230),    // from the bush: bottom right (the sticker)
-    ...cut(1, [0.309, 0.367, 0.662, 0.579], 230),   // the rose-like one, front
-    ...cut(0, [0.455, 0.071, 0.412, 0.378], 230),   // from the bush: top right
+    ...cut(0, [0.485, 0.071, 0.382, 0.345], 230),   // from the bush: top right
     ...cut(0, [0.06, 0.611, 0.364, 0.336], 230));   // from the bush: bottom left
-  S.buds.push(...cut(0, [0.455, 0.071, 0.412, 0.378], 150), ...cut(0, [0.56, 0.475, 0.391, 0.408], 150));   // small ones
+  S.buds.push(...cut(0, [0.485, 0.071, 0.382, 0.345], 150), ...cut(0, [0.56, 0.475, 0.391, 0.408], 150));   // small ones
   // the two glossy leaves on the branch in the third photo (crop, then where the leaf stalk starts)
   S.leaves = [
     leafFromPhoto(im[2], [60, 862, 430, 392], [478, 1244], darkLeafMatte),
