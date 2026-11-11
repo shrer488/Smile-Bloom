@@ -416,7 +416,26 @@ const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d");
 // you'd lie sideways and the flowers would grow from the side of you. We spot that from your face
 // and turn the picture upright before the effect runs (SRC), then turn it back for the screen.
 const rotC = document.createElement("canvas"), rotCtx = rotC.getContext("2d");
-let SRC = video, rotK = 0, rotVotes = 0;   // rotK: quarter turns (clockwise) applied to the camera picture
+let SRC = video, rotK = 0, rotVotes = 0, lastOrientAt = 0, orientFace = null;
+// Which way is the phone held? Looked up on the camera's own, untouched picture (small copy, twice a
+// second) by a separate face finder - so it never depends on our own turning and can't get stuck
+// upside down. Only a quarter turn either way, and only once it has held for ~0.7 s.
+const oriC = document.createElement("canvas"), oriCtx = oriC.getContext("2d", { willReadFrequently: true });
+function checkOrientation(now) {
+  const w = video.videoWidth, h = video.videoHeight, k = 256 / Math.max(w, h);
+  oriC.width = Math.round(w * k); oriC.height = Math.round(h * k);
+  oriCtx.drawImage(video, 0, 0, oriC.width, oriC.height);
+  let res; try { res = orientFace.detect(oriC); } catch { return; }
+  const lm = res && res.faceLandmarks && res.faceLandmarks[0];
+  if (!lm) return;                                                   // no face: keep things as they are
+  const ux = (lm[10].x - lm[152].x) * oriC.width, uy = (lm[10].y - lm[152].y) * oriC.height;   // chin -> forehead
+  let d = Math.atan2(uy, ux) * 180 / Math.PI + 90;                   // 0 = upright in the camera's picture
+  d = ((d % 360) + 540) % 360 - 180;
+  const target = d > 50 && d < 130 ? 3 : d < -50 && d > -130 ? 1 : Math.abs(d) < 35 ? 0 : rotK;
+  if (target === rotK) rotVotes = 0;
+  else if (!rotVotes) rotVotes = now;
+  else if (now - rotVotes > 700) { rotK = target; rotVotes = 0; sproutsReady = false; }
+}   // rotK: quarter turns (clockwise) applied to the camera picture
 function uprightSource() {
   if (!rotK) return video;
   const w = video.videoWidth, h = video.videoHeight, odd = rotK & 1;
@@ -639,6 +658,16 @@ async function makeModels() {
         delegate },
       runningMode: "VIDEO", outputConfidenceMasks: true, outputCategoryMask: false,
     });
+    if (PHONE) {   // a small, separate face finder just for "which way is the phone held"
+      try {
+        orientFace = await FaceLandmarker.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+            delegate },
+          runningMode: "IMAGE", numFaces: 1,
+        });
+      } catch (e) { console.warn("Orientation check unavailable", e); orientFace = null; }
+    }
     try { // hands are a bonus — the effect still works if this fails to load
       if (PHONE) throw new Error("skipped on phones to keep things fast");
       handLandmarker = await HandLandmarker.createFromOptions(fileset, {
@@ -1745,6 +1774,7 @@ function chooseFlower(key) {
 }
 renderStickers();
 window._sets = SETS;   // for debugging in the console
+Object.defineProperty(window, "_rotK", { get: () => rotK });   // debugging: the phone-sideways turn
 
 // a four-point twinkle
 function drawTwinkle(x, y, r, a) {
@@ -2179,6 +2209,7 @@ function loop(now) {
   // phones: run the trackers on every other camera frame (they're the slow part) - the flowers and
   // video still draw every frame, which keeps it smooth instead of ~10 frames a second
   if (newFrame) lastVideoTime = video.currentTime;
+  if (PHONE && orientFace && newFrame && now - lastOrientAt > 450) { lastOrientAt = now; checkOrientation(now); }
   if (newFrame && (!PHONE || (modelTick++ & 1) === 0)) {
     const ts = performance.now();
     const fr = faceLandmarker.detectForVideo(SRC, ts);
@@ -2188,14 +2219,6 @@ function loop(now) {
       const get = (n) => (cats.find((c) => c.categoryName === n) || { score: 0 }).score;
       smileRaw = (get("mouthSmileLeft") + get("mouthSmileRight")) / 2;   // only YOUR smile counts
       const lm = fr.faceLandmarks[mi];
-      if (PHONE) {   // which way is up for your face? (chin -> forehead)
-        const ux = (lm[10].x - lm[152].x) * vw, uy = (lm[10].y - lm[152].y) * vh;
-        let d = Math.atan2(uy, ux) * 180 / Math.PI + 90;           // 0 = upright
-        d = ((d + 540) % 360) - 180;
-        const want = d > 55 ? -1 : d < -55 ? 1 : 0;
-        rotVotes = want ? rotVotes + 1 : 0;
-        if (rotVotes > 8) { rotK = (rotK + want + 4) % 4; rotVotes = 0; sproutsReady = false; }
-      }
       { const fw = Math.abs(lm[454].x - lm[234].x) * vw;
         faceV = { x: lm[1].x * vw, y: lm[1].y * vh, w: fw, top: lm[10].y * vh - 0.3 * fw }; }   // camera pixels, for framing (top ≈ top of your hair)
       const [fx, fy] = videoNormToScreen(lm[10].x, lm[10].y);
