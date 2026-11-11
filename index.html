@@ -165,7 +165,32 @@
   body.phone .phone-only { display:grid !important; }
   body.phone p.phone-only { display:block !important; }
   body.phone .desk-only { display:none !important; }
-  body.phone #hud { left:10px; top:14px; }
+  /* phone: the smile meter folds into a round smile button (top left, like the ? button); tap it and
+     the meter opens as a horizontal bar under it */
+  #smileBtn { display:none; position:absolute; left:14px; top:14px; z-index:6; width:40px; height:40px; border-radius:50%;
+    border:1px solid rgba(255,255,255,.22); background:var(--panel); color:#fff; padding:0; place-items:center;
+    cursor:pointer; backdrop-filter:blur(8px); box-shadow:0 4px 16px rgba(0,0,0,.3); transition:background .2s; }
+  #smileBtn svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; }
+  #smileBtn svg .eye { fill:currentColor; stroke:none; }
+  #smileBtn.on { background:var(--pink); }
+  body.phone.live #smileBtn { display:grid; }
+  body.phone #hud { display:none !important; left:14px; top:64px; flex-direction:row; padding:10px 16px; gap:0; }
+  body.phone #hud.open { display:flex !important; }
+  body.phone #hud > .ico { display:none; }
+  body.phone #meterWrap { width:200px; height:26px; cursor:ew-resize; }
+  body.phone #meter { left:0; right:0; top:50%; bottom:auto; width:auto; height:8px; transform:translateY(-50%); }
+  body.phone #meterFill { top:0; bottom:0; left:0; right:auto; height:100%; transition:width .08s; }
+  body.phone #meterMark { top:3px; bottom:3px; left:0; right:auto; width:4px; height:auto; margin:0 0 0 -2px; transition:none; }
+  #saveSheet { position:fixed; inset:0; z-index:20; display:none; place-items:center; padding:24px;
+    background:rgba(10,20,35,.45); backdrop-filter:blur(6px); }
+  #saveSheet.open { display:grid; }
+  #saveSheet .card { width:min(320px, 100%); background:#fff; border-radius:22px; padding:14px; display:grid; gap:10px;
+    box-shadow:0 20px 60px rgba(0,0,0,.35); }
+  #saveSheet .preview { border-radius:14px; overflow:hidden; background:#000; max-height:56vh; display:grid; place-items:center; }
+  #saveSheet .preview img, #saveSheet .preview video { display:block; width:100%; max-height:56vh; object-fit:contain; }
+  #saveSheet button { border:0; border-radius:999px; padding:14px; font:700 16px system-ui, sans-serif; cursor:pointer; }
+  #saveSheet .primary { background:#24447a; color:#fff; }
+  #saveSheet .ghost { background:#eef1f6; color:#24447a; }
   #helpBtn { position:absolute; left:16px; bottom:16px; z-index:6; width:40px; height:40px; border-radius:50%;
     border:1px solid rgba(255,255,255,.22); background:var(--panel); color:#fff; font-family:inherit;
     font-size:18px; font-weight:700; line-height:1; cursor:pointer; backdrop-filter:blur(8px);
@@ -302,11 +327,15 @@
       <rect class="frame" x="4" y="9" width="24" height="14" rx="3" />
     </svg>
   </button>
+  <button id="smileBtn" title="Smile meter" aria-label="Smile meter" aria-expanded="false" aria-controls="hud">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5"/><path d="M8 14.2c1 1.5 2.4 2.3 4 2.3s3-.8 4-2.3"/><circle class="eye" cx="9" cy="9.8" r="1.1"/><circle class="eye" cx="15" cy="9.8" r="1.1"/></svg>
+  </button>
   <button id="helpBtn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" aria-expanded="false" aria-controls="help">?</button>
   <div id="help" role="dialog" aria-label="Keyboard shortcuts">
     <h2 class="desk-only">Keyboard shortcuts</h2>
     <h2 class="phone-only">How it works</h2>
     <dl class="phone-only">
+      <dt>💾</dt><dd>After a photo or video, tap Save to Photos, then Save Image or Save Video</dd>
       <dt>😊</dt><dd>Smile and flowers bloom around you</dd>
       <dt>🌸</dt><dd>Swipe the flowers at the bottom and tap one to switch</dd>
       <dt>⏺</dt><dd>Tap the red button to record, tap again to stop</dd>
@@ -349,6 +378,14 @@
   </div>
   <div id="count" aria-live="assertive"></div>
   <div id="flash"></div>
+  <!-- phones: after a photo or video, a preview with "Save to Photos" (the share sheet's Save Image / Save Video) -->
+  <div id="saveSheet" role="dialog" aria-label="Save your photo or video">
+    <div class="card">
+      <div class="preview"></div>
+      <button id="saveToPhotos" class="primary">Save to Photos</button>
+      <button id="saveDone" class="ghost">Done</button>
+    </div>
+  </div>
 </div>
 <video id="v" playsinline muted></video>
 
@@ -579,12 +616,19 @@ function closeCamera() {
   if (s) s.getTracks().forEach((t) => t.stop());   // turns the camera (and its light) off
   video.srcObject = null;
   hud.style.display = "none";
+  if (PHONE) toggleSmileBar(false);
   document.body.classList.remove("live");
   placeHud();
   setStatus("");
   $("intro").style.display = "flex";
 }
 $("closeWin").onclick = closeCamera;
+function toggleSmileBar(open = !hud.classList.contains("open")) {
+  hud.classList.toggle("open", open);
+  $("smileBtn").classList.toggle("on", open);
+  $("smileBtn").setAttribute("aria-expanded", open);
+}
+$("smileBtn").onclick = (e) => { e.stopPropagation(); toggleSmileBar(); };
 
 $("start").onclick = async () => {
   $("intro").style.display = "none";
@@ -2164,8 +2208,9 @@ function loop(now) {
   const thr = parseFloat(sens.value);
   if (smile > thr) { smiling = true; lastSmileTime = t; }
   else if (t - lastSmileTime > 0.6) smiling = false;
-  meterFill.style.height = clamp(smile * 100, 0, 100) + "%";
-  meterMark.style.bottom = thr * 100 + "%";
+  if (PHONE) meterFill.style.width = clamp(smile * 100, 0, 100) + "%";   // phones: a horizontal bar
+  else meterFill.style.height = clamp(smile * 100, 0, 100) + "%";
+  if (PHONE) meterMark.style.left = thr * 100 + "%"; else meterMark.style.bottom = thr * 100 + "%";
 
   // bloom spreads out over ~1.5s, retracts a bit faster
   prog = clamp(prog + (smiling ? dt / 1.5 : -dt / 1.0), 0, 1);
@@ -2380,11 +2425,12 @@ const meterWrap = $("meterWrap");
 function setThreshold(v) {
   v = clamp(v, +sens.min, +sens.max);
   sens.value = v;
-  meterMark.style.bottom = v * 100 + "%";
+  if (PHONE) meterMark.style.left = v * 100 + "%"; else meterMark.style.bottom = v * 100 + "%";
   meterWrap.setAttribute("aria-valuenow", Math.round(v * 100));
 }
 meterWrap.addEventListener("pointerdown", (e) => {
-  const follow = (ev) => { const r = meterWrap.getBoundingClientRect(); setThreshold(1 - (ev.clientY - r.top) / r.height); };
+  const follow = (ev) => { const r = meterWrap.getBoundingClientRect();
+    setThreshold(PHONE ? (ev.clientX - r.left) / r.width : 1 - (ev.clientY - r.top) / r.height); };
   meterWrap.setPointerCapture(e.pointerId);
   meterWrap.classList.add("drag");
   follow(e);
@@ -2436,6 +2482,41 @@ function setVertButton(on) {
 $("vert").onclick = toggleVertical;
 
 function saveBlob(blob, ext) {
+  if (PHONE) { showSaveSheet(blob, ext); return; }   // phones: a preview with "Save to Photos"
+  downloadBlob(blob, ext);
+}
+// Phones: websites can't write into the Photos app directly, but the share sheet can - it has
+// "Save Image" / "Save Video". Sharing needs a fresh tap, so we show a preview with a button for it.
+let pendingSave = null;
+function showSaveSheet(blob, ext) {
+  // plain type (no ";codecs=..."), which the iPhone share sheet needs to offer "Save Video"
+  const type = (blob.type || (ext === "png" ? "image/png" : ext === "mp4" ? "video/mp4" : "video/webm")).split(";")[0];
+  const file = new File([blob], `smile-bloom-${Date.now()}.${ext}`, { type });
+  const url = URL.createObjectURL(blob);
+  pendingSave = { file, blob, ext, url };
+  const pv = document.querySelector("#saveSheet .preview");
+  pv.innerHTML = type.startsWith("image")
+    ? `<img src="${url}" alt="Your photo">`
+    : `<video src="${url}" playsinline muted loop autoplay></video>`;
+  $("saveToPhotos").textContent = "Save to Photos";
+  $("saveSheet").classList.add("open");
+}
+function closeSaveSheet() {
+  $("saveSheet").classList.remove("open");
+  document.querySelector("#saveSheet .preview").innerHTML = "";
+  if (pendingSave) { const u = pendingSave.url; setTimeout(() => URL.revokeObjectURL(u), 1000); }
+  pendingSave = null;
+}
+$("saveToPhotos").onclick = async () => {
+  if (!pendingSave) return;
+  const { file, blob, ext } = pendingSave;
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); closeSaveSheet(); }
+    catch (e) { if (e.name !== "AbortError") { downloadBlob(blob, ext); closeSaveSheet(); } }   // cancelled: keep the preview open
+  } else { downloadBlob(blob, ext); closeSaveSheet(); }   // no share sheet: save as a download instead
+};
+$("saveDone").onclick = closeSaveSheet;
+function downloadBlob(blob, ext) {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `smile-bloom-${Date.now()}.${ext}`;
