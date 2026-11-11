@@ -342,7 +342,7 @@
       <dt>⏺</dt><dd>Tap the red button to record, tap again to stop</dd>
       <dt>📷</dt><dd>The camera button takes a photo</dd>
       <dt>⏱</dt><dd>The timer adds a 3 or 10 second countdown (tap it again to cancel)</dd>
-      <dt>💾</dt><dd>To keep it: photos - tap Save Image; videos - tap Save to Photos, then Save Video</dd>
+      <dt>💾</dt><dd>To keep it, tap Save Image or Save Video in the menu that opens (sometimes Save to Photos first)</dd>
     </dl>
     <dl class="desk-only">
       <dt><kbd>F</kbd></dt><dd>Next flower</dd>
@@ -2594,8 +2594,12 @@ function startRecording() {
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   recorder.onstop = () => {
     const type = recorder.mimeType || "video/webm";
-    if (sharedEarly) sharedEarly = false;   // already handed to the share sheet on the stop tap
-    else saveBlob(new Blob(chunks, { type }), type.includes("mp4") ? "mp4" : "webm");
+    const blob = new Blob(chunks, { type }), ext = type.includes("mp4") ? "mp4" : "webm";
+    // Phones: the finished video is usually ready within a moment of the stop tap - still counted as
+    // part of that tap, so the share sheet can open straight away (one tap: Save Video). If the
+    // phone says it's too late, shareNow falls back to the Save to Photos preview.
+    if (PHONE && performance.now() - stopTapAt < 900) { if (!shareNow(blob, ext)) showSaveSheet(blob, ext); }
+    else saveBlob(blob, ext);
     recorder = null;
     clearInterval(recClock);
     btn.classList.remove("on"); timeEl.classList.remove("show");
@@ -2609,9 +2613,10 @@ function startRecording() {
   btn.classList.add("on"); timeEl.classList.add("show");
   btn.title = "Stop recording (R)"; btn.setAttribute("aria-label", "Stop recording");
 }
-let sharedEarly = false;
+let stopTapAt = -1e9;
 function toggleRecord() {
   if (recorder) {                                      // stopping never waits for the timer
+    stopTapAt = performance.now();
     recorder.stop(); return;
   }
   if (timerSecs && !countdown) $("rec").classList.add("armed");
